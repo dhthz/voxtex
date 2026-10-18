@@ -56,6 +56,12 @@ def text(path: ProjectPath = Path(".")) -> None:
 
 
 @app.command()
+def watch(path: ProjectPath = Path(".")) -> None:
+    """Convert %> lines typed by any dictation app into LaTeX on save."""
+    _not_yet("M4")
+
+
+@app.command()
 def init() -> None:
     """First-run wizard: backend, API key, microphone."""
     _not_yet("M6")
@@ -74,9 +80,28 @@ def undo(n: Annotated[int, typer.Argument(min=1, help="Number of writes to rever
 
 
 @app.command()
-def index(path: ProjectPath = Path(".")) -> None:
+def index(
+    path: ProjectPath = Path("."),
+    rebuild: Annotated[bool, typer.Option("--rebuild", help="Ignore the cache.")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Dump the full index as JSON.")] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Also list macros, labels, samples.")
+    ] = False,
+) -> None:
     """Print what voxtex learned about the project."""
-    _not_yet("M1")
+    from voxtex.project.discover import DiscoveryError
+    from voxtex.project.index import load_index
+    from voxtex.project.report import print_index
+
+    try:
+        idx, cached = load_index(path, rebuild=rebuild)
+    except DiscoveryError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(1) from e
+    if as_json:
+        print(idx.model_dump_json(indent=2))
+        return
+    print_index(console, idx, cached=cached, verbose=verbose)
 
 
 def main() -> None:

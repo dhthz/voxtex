@@ -19,3 +19,6 @@ build/
 *.run.xml
 *.synctex.gz
 *.toc
+
+# Real thesis used for manual testing (kept out of the repo)
+test_thesis/
