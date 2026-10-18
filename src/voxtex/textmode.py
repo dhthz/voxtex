@@ -74,6 +74,10 @@ def print_step(console: Console, step: Step, show_prompt: bool) -> None:
         console.rule()
     for n in step.notices:
         console.print(f"[cyan]{escape(n)}[/cyan]")
+    if step.retried:
+        console.print(
+            "[magenta]⟲ fixed after validation:[/magenta] " + escape("; ".join(step.first_errors))
+        )
     d, b = step.decision, step.block
     match d:
         case Wait():
@@ -89,9 +93,16 @@ def print_step(console: Console, step: Step, show_prompt: bool) -> None:
             console.print(Syntax(b.latex if b else "", "latex", word_wrap=True, theme="ansi_dark"))
             if b and b.note:
                 console.print(f"[yellow]% voxtex-check: {escape(b.note)}[/yellow]")
+    r = step.report
+    if r:
+        for w in r.warnings:
+            console.print(f"[yellow]! {escape(w.message)}[/yellow]")
+    checks = ""
+    if r:
+        checks = f" · checked {r.seconds:.1f}s" + (" (compiled)" if r.compiled else "")
     console.print(
         f"[dim]{step.provider} · {step.input_tokens} in / {step.output_tokens} out tokens"
-        f" · {step.latency_s:.1f}s[/dim]"
+        f" · {step.latency_s:.1f}s{checks}[/dim]"
     )
 
 

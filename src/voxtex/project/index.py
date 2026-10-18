@@ -7,6 +7,7 @@ thesis), so per-file incremental rebuilds aren't worth the complexity yet.
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from voxtex.project.labels import Label, collect_labels
 from voxtex.project.preamble import Preamble, count_macro_uses, parse_macros, parse_preamble
 from voxtex.project.style import StyleSamples, pick_samples
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 STATE_DIR = ".voxtex"
 
 
@@ -41,6 +42,7 @@ class ProjectIndex(BaseModel):
     bib: list[BibEntry] = []
     labels: list[Label] = []
     style: StyleSamples
+    known_commands: list[str] = []  # every \command and environment name used in the project
     stamps: dict[str, FileStamp] = {}
 
     @property
@@ -77,8 +79,17 @@ def build_index(path: Path) -> ProjectIndex:
         bib=parse_bibs(pf.bib_files),
         labels=labels,
         style=style,
+        known_commands=sorted(_commands_used(pf.preamble + pf.body)),
         stamps={_rel(p, root): _stamp(p) for p in pf.tracked_paths},
     )
+
+
+def _commands_used(sources) -> set[str]:
+    names: set[str] = set()
+    for f in sources:
+        names.update(re.findall(r"\\([A-Za-z@]+)", f.text))
+        names.update("env:" + e for e in re.findall(r"\\begin\s*\{([^}]+)\}", f.text))
+    return names
 
 
 def _cache_path(root: Path) -> Path:

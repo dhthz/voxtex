@@ -55,6 +55,9 @@ DEFAULTS: dict[str, Any] = {
         "style": "academic",  # clean | academic
         "language": "auto",  # auto | en | el
     },
+    "validate": {
+        "compile": "auto",  # auto (only for unfamiliar commands) | always | off
+    },
 }
 
 
@@ -84,6 +87,7 @@ class Config(BaseModel):
     providers: dict[str, ProviderConfig]
     style: str = "academic"
     language: str = "auto"
+    compile_check: str = "auto"
     sources: list[str] = []  # config files that were merged in, for `doctor`
 
     def chain_providers(self, private_only: bool = False) -> list[ProviderConfig]:
@@ -169,5 +173,6 @@ def load_config(project_root: Path | None = None, global_dir: Path | None = None
         providers=providers,
         style=data["writing"]["style"],
         language=data["writing"]["language"],
+        compile_check=data["validate"]["compile"],
         sources=sources + env_sources,
     )

@@ -177,3 +177,79 @@ def test_cli_text_no_provider(sample_thesis, monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["text", str(sample_thesis)], input="")
     assert r.exit_code == 1
     assert "no usable AI provider" in r.output
+
+
+# --- validation + retry (M3) --------------------------------------------------------------------
+
+
+def quiet(engine):
+    """No compile check: keeps these tests fast and independent of a TeX install."""
+    from voxtex.validate import Validator
+
+    engine.validator = Validator(engine.idx, "off")
+    return engine
+
+
+def test_fake_cite_key_is_retried_and_fixed(make_engine):
+    engine, llm = make_engine(
+        {"action": "insert", "latex": "As shown \\parencite{chalkidis2021}."},
+        {"action": "insert", "latex": "As shown \\parencite{chalkidis2020}."},
+    )
+    s = quiet(engine).feed("as chalkidis showed")
+    assert isinstance(s.decision, Insert)
+    assert s.block.latex.endswith("{chalkidis2020}.") and s.block.note == ""
+    assert s.retried and "unknown citation key 'chalkidis2021'" in s.first_errors[0]
+    retry = llm.seen[1]
+    assert retry[:2] == llm.seen[0]  # same prompt, then the bad answer and the feedback
+    assert retry[2]["role"] == "assistant" and "chalkidis2021" in retry[2]["content"]
+    assert "unknown citation key 'chalkidis2021'" in retry[3]["content"]
+    assert s.input_tokens == 1800  # both calls counted
+
+
+def test_invented_number_twice_becomes_uncertain(make_engine):
+    bad = {"action": "insert", "latex": "Accuracy improved to 0.93."}
+    engine, llm = make_engine(bad, bad)
+    s = quiet(engine).feed("accuracy improved a lot")
+    assert isinstance(s.decision, UncertainInsert)
+    assert s.block.note == "number 0.93 was not said by the speaker"
+    assert s.report.errors and len(llm.seen) == 2
+
+
+def test_retry_that_gives_up_keeps_first_answer_with_note(make_engine):
+    engine, _ = make_engine(
+        {"action": "insert", "latex": "See \\cref{fig:ghost}."},
+        {"action": "ignore"},
+    )
+    s = quiet(engine).feed("see the ghost figure")
+    assert isinstance(s.decision, UncertainInsert)
+    assert "fig:ghost" in s.block.note
+
+
+def test_replace_with_problems_keeps_block_and_notes_them(make_engine):
+    engine, _ = make_engine(
+        {"action": "insert", "latex": "Score 0.71."},
+        {"action": "replace", "block_id": "b1", "latex": "Score 0.75."},
+        {"action": "replace", "block_id": "b1", "latex": "Score 0.75."},
+    )
+    quiet(engine).feed("score 0.71")
+    s = engine.feed("change it")
+    assert isinstance(s.decision, Replace) and s.block.id == "b1"
+    assert s.block.note == "number 0.75 was not said by the speaker"
+    assert len(engine.buffer.blocks) == 1
+
+
+def test_valid_output_is_not_retried(make_engine):
+    engine, llm = make_engine({"action": "insert", "latex": "Legal-BERT reaches 0.71."})
+    s = quiet(engine).feed("legal bert reaches 0.71")
+    assert not s.retried and s.report.ok and len(llm.seen) == 1
+
+
+def test_labels_from_this_session_are_offered(make_engine):
+    engine, llm = make_engine(
+        {"action": "insert", "latex": "\\begin{table}\\caption{x}\\label{tab:compare}\\end{table}"},
+        {"action": "insert", "latex": "See \\cref{tab:compare}."},
+    )
+    quiet(engine).feed("add a table")
+    s = engine.feed("as shown in the results table")
+    assert "tab:compare (table)" in llm.seen[1][1]["content"]
+    assert s.report.ok  # referencing a label from an earlier block validates
