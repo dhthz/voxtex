@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="120" viewBox="0 0 480 120" role="img" aria-label="voxtex">
+  <g fill="#0969da">
+    <rect x="8"  y="48" width="10" height="24" rx="5"/>
+    <rect x="26" y="34" width="10" height="52" rx="5"/>
+    <rect x="44" y="20" width="10" height="80" rx="5"/>
+    <rect x="62" y="38" width="10" height="44" rx="5"/>
+    <rect x="80" y="50" width="10" height="20" rx="5"/>
+  </g>
+  <text x="112" y="82" font-family="'Latin Modern Roman', 'CMU Serif', Georgia, 'Times New Roman', serif" font-size="68" fill="#1f2328"><tspan fill="#0969da">\</tspan>voxtex</text>
+</svg>
