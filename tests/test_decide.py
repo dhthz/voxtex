@@ -65,3 +65,15 @@ def test_invalid(text):
 )
 def test_latex_escape_repair(raw, latex):
     assert parse_decision('{"action":"insert","latex":' + raw + "}").latex == latex
+
+
+def test_over_escaped_latex_is_unescaped_once():
+    from voxtex.engine.decide import fix_over_escaped
+
+    bad = "\\\\begin{itemize}\\n\\\\item Η αρχή.\\n\\\\end{itemize}"
+    assert fix_over_escaped(bad) == "\\begin{itemize}\n\\item Η αρχή.\n\\end{itemize}"
+    # normal LaTeX with line breaks is left alone
+    for ok in ("a \\\\ b \\textbf{x} \\\\ c", "0.71 \\\\\n\\midrule \\noindent"):
+        assert fix_over_escaped(ok) == ok
+    d = parse_decision('{"action":"insert","latex":"\\\\\\\\section{A}\\\\n\\\\\\\\label{sec:a}"}')
+    assert d.latex == "\\section{A}\n\\label{sec:a}"

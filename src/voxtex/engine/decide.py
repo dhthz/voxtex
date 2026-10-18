@@ -146,6 +146,22 @@ def repair_escapes(blob: str) -> str:
     return "".join(out)
 
 
+_DOUBLE_CMD = re.compile(r"\\\\(?=[A-Za-z])")
+_SINGLE_CMD = re.compile(r"(?<!\\)\\(?=[A-Za-z])")
+
+
+def fix_over_escaped(latex: str) -> str:
+    """Undo one level of escaping when the model escaped twice: `\\\\begin{x}\\n\\\\item`
+    (a LaTeX line break before every command, literal \\n) instead of `\\begin{x}` + newline."""
+    doubles = len(_DOUBLE_CMD.findall(latex))
+    singles = len(_SINGLE_CMD.findall(latex)) - latex.count("\\n")
+    if doubles < 2 or doubles <= singles:
+        return latex
+    out = re.sub(r"\\n(?![a-z])", "\n", latex)  # literal \n → newline (not \noindent)
+    out = _DOUBLE_CMD.sub(lambda m: "\\", out)
+    return out.replace('\\"', '"')
+
+
 def parse_decision(text: str) -> Decision:
     """Parse the model's reply; raises ParseError so the chain can retry."""
     cleaned = _FENCE.sub("", text.strip())
@@ -158,6 +174,8 @@ def parse_decision(text: str) -> Decision:
         raise ParseError(f"invalid JSON: {e}") from e
     if isinstance(data, dict) and isinstance(data.get("action"), str):
         data["action"] = data["action"].strip().lower()
+    if isinstance(data, dict) and isinstance(data.get("latex"), str):
+        data["latex"] = fix_over_escaped(data["latex"])
     try:
         return _ADAPTER.validate_python(data)
     except ValidationError as e:

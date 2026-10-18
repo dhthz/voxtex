@@ -223,3 +223,27 @@ def test_wrap_latin(latex, wrapped):
     assert wrap_latin(latex, "\\en") == wrapped
     assert wrap_latin(wrapped, "\\en") == wrapped  # idempotent
     assert wrap_latin(latex, "") == latex
+
+
+def test_spoken_numbers_glued_to_units():
+    assert {85, 120} <= spoken_numbers("Sesame answered in 85ms and Jena in 120")
+
+
+def test_normalize_cite_keys():
+    from voxtex.validate.citations import normalize_cite_keys
+
+    known = {"Berners-Lee01", "Broekstra02"}
+    assert normalize_cite_keys(r"\cite{Berners\-Lee01, broekstra02}", known) == (
+        r"\cite{Berners-Lee01,Broekstra02}"
+    )
+    unchanged = r"\parencite[p.~3]{Berners-Lee01} \cite{madeup}"
+    assert normalize_cite_keys(unchanged, known) == unchanged
+
+
+def test_wrap_latin_merges_runs_across_commas_and_numbers():
+    from voxtex.validate.latin import wrap_latin
+
+    assert wrap_latin("In our experiments, Sesame answered in 85 milliseconds.", "\\en") == (
+        "\\en{In our experiments, Sesame answered in 85 milliseconds}."
+    )
+    assert wrap_latin("Το RDF/XML και 85 ms", "\\en") == "Το \\en{RDF}/\\en{XML} και 85 \\en{ms}"

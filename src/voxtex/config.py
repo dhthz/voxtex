@@ -28,6 +28,7 @@ DEFAULTS: dict[str, Any] = {
             "base_url": "https://api.groq.com/openai/v1",
             "api_key_env": "GROQ_API_KEY",
             "model": "openai/gpt-oss-120b",
+            "reasoning_effort": "low",  # fewer hidden reasoning tokens: faster replies
         },
         "groq-qwen": {
             "base_url": "https://api.groq.com/openai/v1",
@@ -58,6 +59,18 @@ DEFAULTS: dict[str, Any] = {
     "validate": {
         "compile": "auto",  # auto (only for unfamiliar commands) | always | off
     },
+    "stt": {
+        "mode": "auto",  # auto | local | groq | openai (watch mode needs none)
+        "local_model": "auto",  # auto | small | medium | large-v3-turbo (multilingual only)
+        "cloud_model": "whisper-large-v3-turbo",
+        "language": "auto",  # auto | el | en
+    },
+    "listen": {
+        "utterance_pause": 0.7,  # silence that ends an utterance (sent to speech-to-text)
+        "decision_pause": 2.5,  # silence after which a pending thought is decided
+        "max_pending_seconds": 20.0,
+        "mic": "",  # device name or index; empty = system default
+    },
 }
 
 
@@ -70,6 +83,7 @@ class ProviderConfig(BaseModel):
     private: bool = False
     json_mode: bool = True  # send response_format=json_object; auto-disabled if rejected
     timeout: float | None = None  # overrides llm.timeout
+    reasoning_effort: str = ""  # low | medium | high, for reasoning models that support it
 
     def resolve_key(self) -> str | None:
         """The API key, "" if none is needed, or None if one is needed but missing."""
@@ -88,6 +102,14 @@ class Config(BaseModel):
     style: str = "academic"
     language: str = "auto"
     compile_check: str = "auto"
+    stt_mode: str = "auto"
+    stt_local_model: str = "auto"
+    stt_cloud_model: str = "whisper-large-v3-turbo"
+    stt_language: str = "auto"
+    utterance_pause: float = 0.7
+    decision_pause: float = 2.5
+    max_pending_seconds: float = 20.0
+    mic: str = ""
     sources: list[str] = []  # config files that were merged in, for `doctor`
 
     def chain_providers(self, private_only: bool = False) -> list[ProviderConfig]:
@@ -174,5 +196,13 @@ def load_config(project_root: Path | None = None, global_dir: Path | None = None
         style=data["writing"]["style"],
         language=data["writing"]["language"],
         compile_check=data["validate"]["compile"],
+        stt_mode=data["stt"]["mode"],
+        stt_local_model=data["stt"]["local_model"],
+        stt_cloud_model=data["stt"]["cloud_model"],
+        stt_language=data["stt"]["language"],
+        utterance_pause=data["listen"]["utterance_pause"],
+        decision_pause=data["listen"]["decision_pause"],
+        max_pending_seconds=data["listen"]["max_pending_seconds"],
+        mic=str(data["listen"]["mic"]),
         sources=sources + env_sources,
     )

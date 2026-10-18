@@ -114,8 +114,16 @@ def send_openai(
     kwargs["max_tokens"] = MAX_OUTPUT_TOKENS
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if p.reasoning_effort:
+        kwargs["reasoning_effort"] = p.reasoning_effort
     try:
-        raw = client.chat.completions.with_raw_response.create(**kwargs)
+        try:
+            raw = client.chat.completions.with_raw_response.create(**kwargs)
+        except openai.BadRequestError as e:
+            if "reasoning_effort" not in kwargs or "reasoning" not in str(e).lower():
+                raise
+            kwargs.pop("reasoning_effort")  # the model doesn't support it: go without
+            raw = client.chat.completions.with_raw_response.create(**kwargs)
     except openai.RateLimitError as e:
         raise RateLimited(reset_seconds(dict(e.response.headers))) from e
     except openai.APITimeoutError as e:

@@ -5,7 +5,7 @@ byte-identical across calls (providers with prompt caching can reuse it).
 Everything that changes per utterance goes into the user message.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from voxtex.engine.buffer import Block
 from voxtex.engine.retrieve import macro_signature
@@ -26,14 +26,17 @@ SYSTEM = """\
 You turn a thesis author's free speech into LaTeX for their document.
 Reply with exactly one JSON object and nothing else:
 {{"action":"wait"}}  the thought is clearly unfinished
-{{"action":"ignore"}}  thinking aloud, not meant for the document
+{{"action":"ignore"}}  thinking aloud, or talk not meant for the document
 {{"action":"insert","latex":"..."}}  new text at the cursor
 {{"action":"replace","block_id":"b3","latex":"..."}}  rewrite a recent block (corrections, "make that more formal")
 {{"action":"delete","block_id":"b3"}}  remove a recent block ("scratch that", "undo")
 {{"action":"uncertain_insert","latex":"...","note":"..."}}  best guess; note says what to check
 
 Rules:
+- Only dictated content goes in the document. Greetings, microphone tests, questions or remarks addressed to you ("is this working?", "give me the result"), and speech that adds no content are "ignore". Never fill in content the speaker didn't say.
 - Write {style} in {language}. The speaker may use Greek or English; never transcribe verbatim, drop fillers and false starts.
+- SPEECH comes from speech recognition and may contain misheard words; correct them from context and TERMS (e.g. a misheard technical term or a word that makes no sense in the sentence).
+- Rewrite only what was said: improve wording and register, but add no claims, interpretations, conclusions or qualifiers (e.g. "average", "significant") the speaker didn't make.
 - Never invent facts, numbers, citations or labels. Use only numbers the speaker said. Cite only keys listed under SOURCES; reference only labels listed under LABELS or created in your own output.
 - If the source or label is ambiguous, pick the best one and use uncertain_insert with a short note.
 - Keep items (table rows, list entries, compared models) in the order the speaker said them, so "the first/second one" means the same to both of you.
@@ -56,6 +59,7 @@ class PromptContext:
     macros: list[Macro]
     kinds: set[str]  # figure/table/... mentioned in the speech
     force: bool = False  # the speaker paused: a decision is required
+    terms: list[str] = field(default_factory=list)  # thesis spellings of terms heard
 
 
 def document_language(idx: ProjectIndex, configured: str = "auto") -> str:
@@ -98,6 +102,8 @@ def user_message(idx: ProjectIndex, ctx: PromptContext) -> str:
         parts.append("LABELS: " + ", ".join(f"{lab.name} ({lab.kind})" for lab in ctx.labels))
     if ctx.macros:
         parts.append("MACROS: " + ", ".join(macro_signature(m) for m in ctx.macros))
+    if ctx.terms:
+        parts.append("TERMS AS SPELLED IN THE THESIS: " + ", ".join(ctx.terms))
     for kind in ("table", "figure"):
         sample = getattr(idx.style, kind)
         if kind in ctx.kinds and sample and sample.text not in ctx.nearby:

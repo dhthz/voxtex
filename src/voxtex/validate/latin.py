@@ -25,7 +25,10 @@ _PROTECTED_BLOCKS = re.compile(
 )
 _COMMAND = re.compile(r"\\([A-Za-z@]+)\*?|\\.")
 _WORD = r"[A-Za-z][A-Za-z0-9]*(?:[-'.][A-Za-z0-9]+)*"
-_RUN = re.compile(rf"{_WORD}(?:[ ]+{_WORD})*")
+# Words separated by spaces/commas, with numbers in between, form one run:
+# "In our experiments, Sesame answered in 85 milliseconds" → one \en{...}
+_SEP = r"[ ,;:]+(?:[0-9][0-9.,]*%?[ ,;:]+)*"
+_RUN = re.compile(rf"{_WORD}(?:{_SEP}{_WORD})*")
 
 
 def _protected_mask(latex: str, wrappers: set[str]) -> list[bool]:

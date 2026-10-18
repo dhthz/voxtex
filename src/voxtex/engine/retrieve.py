@@ -18,6 +18,7 @@ MAX_LABELS = 8
 MAX_MACROS = 12
 ALWAYS_MACROS = 5  # most-used macros are always offered
 SURNAME_RATIO = 0.82
+TERM_RATIO = 0.75  # short technical terms differ by a letter or two when misheard
 
 _GREEK_DIGRAPHS = {"ου": "ou", "μπ": "b", "ντ": "d", "γκ": "g", "γγ": "ng", "αι": "ai", "ει": "i"}
 _GREEK = dict(
@@ -82,6 +83,10 @@ def translit(s: str) -> str:
 
 def tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", translit(text))
+
+
+def _ratio(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
 
 
 def _similar(a: str, b: str) -> bool:
@@ -173,3 +178,20 @@ def macro_signature(m: Macro) -> str:
     """`\\en{…}`, `\\metric{…}[…]`, `\\legalbert`."""
     required = m.arity - m.optional
     return m.name + "[…]" * m.optional + "{…}" * required
+
+
+def match_terms(text: str, terms: list[str], limit: int = 8) -> list[str]:
+    """Thesis terms that look like words in the (possibly misheard) speech: SCRQL → SeRQL."""
+    words = [t for t in tokens(text) if len(t) >= 3]
+    picked = []
+    for term in terms:
+        squashed = "".join(tokens(term))
+        if len(squashed) < 3:
+            continue
+        close = any(
+            w == squashed or (min(len(w), len(squashed)) >= 4 and _ratio(squashed, w) >= TERM_RATIO)
+            for w in words
+        )
+        if close or squashed in "".join(words):
+            picked.append(term)
+    return picked[:limit]

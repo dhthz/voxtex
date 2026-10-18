@@ -26,6 +26,8 @@ _SUBSUP = re.compile(r"[_^](?:\{[^{}]*\}|\\?[A-Za-z0-9])")
 _COMMAND = re.compile(r"\\[A-Za-z@]+")
 # A number not glued to letters (F1, L2, 3D, BERT2 are names, not claims).
 _NUMBER = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?)(?![\w])")
+# In speech, numbers may be glued to units ("85ms", "3x"); they still count as said.
+_SPOKEN_NUMBER = re.compile(r"(?<![\d.,])(\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?)")
 
 _WORDS = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -49,7 +51,7 @@ def _norm_word(w: str) -> str:
 
 def spoken_numbers(text: str) -> set[float]:
     """Numbers in the transcript: digits plus simple number words and decimals."""
-    found = {_to_float(m) for m in _NUMBER.findall(text)}
+    found = {_to_float(m) for m in _SPOKEN_NUMBER.findall(text)}
     # Number words never run across punctuation ("six three, three epochs").
     for segment in re.split(r"[,;:!?()]|\.(?!\d)", text):
         found |= _number_words([_norm_word(w) for w in re.findall(r"\w+", segment)])

@@ -30,6 +30,7 @@ from voxtex.project.index import ProjectIndex
 from voxtex.project.labels import Label, collect_labels
 from voxtex.providers import Chain, ChainExhausted, ChainResult
 from voxtex.validate import Report, ValidationContext, Validator, labels_in
+from voxtex.validate.citations import normalize_cite_keys
 from voxtex.validate.latin import wrap_latin
 
 MAX_PENDING_CHARS = 1200  # force a decision once this much speech is waiting
@@ -86,6 +87,7 @@ class Engine:
     ):
         self.idx = idx
         self.validator = validator or Validator(idx, config.compile_check)
+        self._bib_keys = {e.key for e in idx.bib}
         self.chain = chain
         self.config = config
         self.location = location
@@ -126,6 +128,7 @@ class Engine:
             macros=retrieve.match_macros(speech, nearby, self.idx.preamble.macros, always),
             kinds=retrieve.kinds_mentioned(speech),
             force=force,
+            terms=retrieve.match_terms(speech, self.idx.latin_terms),
         )
 
     # --- main entry ------------------------------------------------------------------------------
@@ -185,11 +188,15 @@ class Engine:
         return applied
 
     def polish(self, d: Decision) -> Decision:
-        """Deterministic fixes before validation: wrap English terms in Greek documents."""
+        """Deterministic fixes before validation: cite keys that are only mis-escaped or
+        mis-cased, and English terms in Greek documents wrapped in the thesis's macro."""
+        if not has_latex(d):
+            return d
+        latex = normalize_cite_keys(d.latex, self._bib_keys)
         wrapper = self.idx.conventions.latin_wrapper
-        if wrapper and has_latex(d):
-            return d.model_copy(update={"latex": wrap_latin(d.latex, wrapper)})
-        return d
+        if wrapper:
+            latex = wrap_latin(latex, wrapper)
+        return d.model_copy(update={"latex": latex}) if latex != d.latex else d
 
     def validate(self, d: Decision, speech: str) -> Report:
         replaced_block = self.buffer.get(d.block_id) if isinstance(d, Replace) else None

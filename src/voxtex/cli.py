@@ -40,13 +40,60 @@ def root(
 ) -> None:
     """With no command, `voxtex` starts listening in the current directory."""
     if ctx.invoked_subcommand is None:
-        listen(Path("."))
+        listen(Path("."), False, None, None, False, None, None, False)
 
 
 @app.command()
-def listen(path: ProjectPath = Path(".")) -> None:
+def listen(
+    path: ProjectPath = Path("."),
+    private: Annotated[
+        bool, typer.Option("--private", help="Keep everything local: local AI and speech-to-text.")
+    ] = False,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Use only this AI provider from the config.")
+    ] = None,
+    file: Annotated[
+        Path | None, typer.Option("--file", help="File to write into (if there's no marker).")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would be written; change nothing.")
+    ] = False,
+    stt: Annotated[
+        str | None, typer.Option("--stt", help="Speech-to-text: auto, local, groq or openai.")
+    ] = None,
+    mic: Annotated[
+        str | None, typer.Option("--mic", help="Microphone name or index (see --list-mics).")
+    ] = None,
+    list_mics: Annotated[
+        bool, typer.Option("--list-mics", help="List microphones and exit.")
+    ] = False,
+) -> None:
     """Index the project, listen to the mic, and write LaTeX at the %> HERE marker."""
-    _not_yet("M5")
+    if list_mics:
+        import subprocess
+
+        from voxtex.audio.capture import list_inputs, prefer_parec
+
+        if prefer_parec():
+            out = subprocess.run(
+                ["pactl", "list", "sources", "short"], capture_output=True, text=True
+            ).stdout
+            console.print("PulseAudio sources (WSL; use the name with --mic):")
+            for line in out.splitlines():
+                parts = line.split("\t")
+                if len(parts) > 1 and not parts[1].endswith(".monitor"):
+                    console.print(f"     {parts[1]}")
+            return
+        try:
+            for i, name in list_inputs():
+                console.print(f"{i:3}  {name}")
+        except OSError as e:
+            console.print(f"[red]✗[/red] audio system unavailable: {e}")
+            raise typer.Exit(1) from e
+        return
+    from voxtex.listenmode import run_listen
+
+    raise typer.Exit(run_listen(console, path, private, provider, file, dry_run, stt, mic))
 
 
 @app.command()

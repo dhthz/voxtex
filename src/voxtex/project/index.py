@@ -9,6 +9,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
@@ -20,7 +21,7 @@ from voxtex.project.labels import Label, collect_labels
 from voxtex.project.preamble import Preamble, count_macro_uses, parse_macros, parse_preamble
 from voxtex.project.style import StyleSamples, pick_samples
 
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 STATE_DIR = ".voxtex"
 
 
@@ -43,6 +44,7 @@ class ProjectIndex(BaseModel):
     labels: list[Label] = []
     style: StyleSamples
     known_commands: list[str] = []  # every \command and environment name used in the project
+    latin_terms: list[str] = []  # most used terms wrapped in \en{...} etc. (Whisper hint)
     stamps: dict[str, FileStamp] = {}
 
     @property
@@ -80,6 +82,7 @@ def build_index(path: Path) -> ProjectIndex:
         labels=labels,
         style=style,
         known_commands=sorted(_commands_used(pf.preamble + pf.body)),
+        latin_terms=_wrapped_terms(chapters, conventions.latin_wrapper),
         stamps={_rel(p, root): _stamp(p) for p in pf.tracked_paths},
     )
 
@@ -90,6 +93,32 @@ def _commands_used(sources) -> set[str]:
         names.update(re.findall(r"\\([A-Za-z@]+)", f.text))
         names.update("env:" + e for e in re.findall(r"\\begin\s*\{([^}]+)\}", f.text))
     return names
+
+
+def _wrapped_terms(sources, wrapper: str, limit: int = 60) -> list[str]:
+    """Most frequent arguments of the Latin-term wrapper, e.g. RDF, SeRQL, Sesame."""
+    if not wrapper:
+        return []
+    counts: Counter[str] = Counter()
+    for f in sources:
+        for m in re.finditer(re.escape(wrapper) + r"\s*\{([^{}\\]{2,40})\}", f.text):
+            term = " ".join(m.group(1).split()).strip(" ().,")
+            if _is_spoken_term(term):
+                counts[term] += 1
+    out: dict[str, str] = {}
+    for t, _ in counts.most_common():
+        out.setdefault(t.lower(), t)  # one spelling per term
+    return list(out.values())[:limit]
+
+
+def _is_spoken_term(term: str) -> bool:
+    """A term someone would say aloud: not a URL, path, code identifier or long phrase."""
+    if not term or len(term) > 25 or len(term.split()) > 3 or any(c in term for c in "/:#=_<>"):
+        return False
+    if any(c.isdigit() for c in term):
+        return False
+    # camelCase identifiers (classesToWrite) are code; acronyms (RDF, SeRQL) are fine
+    return not re.search(r"^[a-z]+[A-Z]", term)
 
 
 def _cache_path(root: Path) -> Path:
