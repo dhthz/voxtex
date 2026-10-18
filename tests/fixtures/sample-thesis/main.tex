@@ -1,0 +1,35 @@
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[english]{babel}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{xspace}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage[style=authoryear,backend=biber]{biblatex}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\addbibresource{references.bib}
+
+\newcommand{\model}[1]{\textsc{#1}}
+\newcommand{\legalbert}{\model{Legal-BERT}}
+\newcommand{\eg}{e.g.\@\xspace}
+\renewcommand{\vec}[1]{\mathbf{#1}}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\NewDocumentCommand{\metric}{m O{macro}}{#2-$F_1$ (#1)}
+
+\title{Domain-Specific Language Models for Legal Text}
+\author{A. Student}
+
+\begin{document}
+
+\maketitle
+
+\include{chapters/introduction}
+\input{chapters/methodology}
+
+\printbibliography
+
+\end{document}

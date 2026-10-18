@@ -1,0 +1,28 @@
+\chapter{Methodology}
+\label{sec:methodology}
+
+We fine-tune each encoder on the classification task using a linear head over
+the \texttt{[CLS]} representation, trained with a learning rate of \num{2e-5}
+for \SI{3}{epochs}. Predictions are obtained as
+\begin{equation}
+  \hat{y} = \argmax_{c} \softmax(\vec{W}\vec{h} + \vec{b})_c ,
+  \label{eq:prediction}
+\end{equation}
+where $\vec{h}$ is the final hidden state. Baseline results are reported in
+\cref{tab:baselines}.
+
+\begin{table}[t]
+  \centering
+  \caption{Baseline results on the development set.}
+  \label{tab:baselines}
+  \begin{tabular}{lS[table-format=1.2]}
+    \toprule
+    Model & {\metric{dev}} \\
+    \midrule
+    \model{BERT-base} & 0.58 \\
+    \legalbert        & 0.66 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+%> HERE

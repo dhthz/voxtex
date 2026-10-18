@@ -1,0 +1,30 @@
+\chapter{Introduction}
+\label{sec:introduction}
+
+Legal documents pose a distinctive challenge for natural language processing.
+They are long, densely cross-referenced and written in a register that differs
+considerably from the general-domain corpora on which most pre-trained models
+are trained. Early neural approaches to legal judgment prediction showed that
+general architectures transfer only partially to this setting
+\parencite{chalkidis2019}.
+
+The introduction of the Transformer \parencite{vaswani2017} and of large
+pre-trained encoders such as \model{BERT} \parencite{devlin2019} changed this
+picture. \textcite{chalkidis2020} demonstrated that further pre-training on
+legal corpora yields consistent gains, and \textcite{zheng2021} later examined
+the conditions under which such domain adaptation is worthwhile. As shown in
+\cref{fig:pipeline}, this thesis follows the same general recipe.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\textwidth]{example-image}
+  \caption{Overview of the domain-adaptation pipeline used in this thesis.}
+  \label{fig:pipeline}
+\end{figure}
+
+\section{Research Questions}
+\label{sec:research-questions}
+
+This work addresses whether domain-specific pre-training improves performance on
+downstream legal classification tasks, and at what computational cost. The
+experimental setup is described in \cref{sec:methodology}.
