@@ -189,3 +189,37 @@ def test_numbers_already_in_the_document_are_allowed(idx):
         idx, "sesame is faster", context=r"\en{Jena} & 120 \\ \en{Sesame} & 85 \\"
     )
     assert check_numbers("Sesame (85 ms) beats Jena (120 ms).", c) == []
+
+
+@pytest.mark.parametrize(
+    "latex, wrapped",
+    [
+        (
+            r"Ο Broekstra και το \en{Sesame} για RDF δεδομένα \cite{Broekstra02}.",
+            r"Ο \en{Broekstra} και το \en{Sesame} για \en{RDF} δεδομένα \cite{Broekstra02}.",
+        ),
+        (r"Το Jena Framework και το OWL-DL.", r"Το \en{Jena Framework} και το \en{OWL-DL}."),
+        (
+            r"\begin{table}[!tb]\caption{Για Jena}\begin{tabular}{| c | c |}\textbf{Sesame} & 85"
+            r"\end{tabular}\label{tableAppA.02}\end{table}",
+            r"\begin{table}[!tb]\caption{Για \en{Jena}}\begin{tabular}{| c | c |}"
+            r"\textbf{\en{Sesame}} & 85\end{tabular}\label{tableAppA.02}\end{table}",
+        ),
+        (  # math, units, macro args, options, comments and refs are left alone
+            r"σε $x_{max}$ \SI{3}{ms} \gloss{term}{ορ} \includegraphics[width=0.5\textwidth]{a.png}"
+            r" \ref{figure4.1} % English comment",
+            r"σε $x_{max}$ \SI{3}{ms} \gloss{term}{ορ} \includegraphics[width=0.5\textwidth]{a.png}"
+            r" \ref{figure4.1} % English comment",
+        ),
+        (
+            r"\begin{equation} f(x) = ax \end{equation}",
+            r"\begin{equation} f(x) = ax \end{equation}",
+        ),
+    ],
+)
+def test_wrap_latin(latex, wrapped):
+    from voxtex.validate.latin import wrap_latin
+
+    assert wrap_latin(latex, "\\en") == wrapped
+    assert wrap_latin(wrapped, "\\en") == wrapped  # idempotent
+    assert wrap_latin(latex, "") == latex

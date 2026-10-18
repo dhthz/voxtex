@@ -253,3 +253,89 @@ def test_labels_from_this_session_are_offered(make_engine):
     s = engine.feed("as shown in the results table")
     assert "tab:compare (table)" in llm.seen[1][1]["content"]
     assert s.report.ok  # referencing a label from an earlier block validates
+
+
+def test_cli_text_writes_file_and_undo_restores(sample_thesis, monkeypatch, tmp_path):
+    """M4 acceptance: text mode writes into the real file; undo restores the exact content."""
+    from voxtex import config
+    from voxtex.cli import app
+
+    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+    (sample_thesis / ".voxtex.toml").write_text('[validate]\ncompile = "off"\n')
+    f = sample_thesis / "chapters" / "methodology.tex"
+    original = f.read_text()
+    llm = ScriptedLLM(
+        {"action": "insert", "latex": "\\legalbert reaches 0.71."},
+        {"action": "replace", "block_id": "b1", "latex": "\\legalbert reaches 0.73."},
+        {
+            "action": "uncertain_insert",
+            "latex": "See \\parencite{chalkidis2019}.",
+            "note": "2019 or 2020?",
+        },
+    )
+    monkeypatch.setattr("voxtex.providers.send_openai", llm)
+    r = CliRunner().invoke(
+        app,
+        ["text", str(sample_thesis), "--provider", "local"],
+        input="legal bert reaches 0.71\nno, 0.73\ncite chalkidis\n",
+    )
+    assert r.exit_code == 0, r.output
+    text = f.read_text()
+    assert (
+        "\\legalbert reaches 0.73.\n\nSee \\parencite{chalkidis2019}.\n"
+        "% voxtex-check: 2019 or 2020?\n\n%> HERE" in text
+    )
+    assert "0.71" not in text
+
+    r = CliRunner().invoke(app, ["undo", "3", "--path", str(sample_thesis)])
+    assert r.exit_code == 0, r.output
+    assert "removed b2" in r.output and "restored b1" in r.output
+    assert f.read_text() == original
+
+
+def test_cli_text_dry_run_changes_nothing(sample_thesis, monkeypatch, tmp_path):
+    from voxtex import config
+    from voxtex.cli import app
+
+    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+    f = sample_thesis / "chapters" / "methodology.tex"
+    original = f.read_text()
+    monkeypatch.setattr(
+        "voxtex.providers.send_openai", ScriptedLLM({"action": "insert", "latex": "X."})
+    )
+    r = CliRunner().invoke(
+        app, ["text", str(sample_thesis), "--provider", "local", "--dry-run"], input="x\n"
+    )
+    assert r.exit_code == 0 and "+ inserted b1" in r.output
+    assert f.read_text() == original
+    assert not (sample_thesis / ".voxtex" / "history.jsonl").exists()
+
+
+def test_cli_text_without_marker_needs_file(sample_thesis, monkeypatch, tmp_path):
+    from voxtex import config
+    from voxtex.cli import app
+
+    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+    m = sample_thesis / "chapters" / "methodology.tex"
+    m.write_text(m.read_text().replace("%> HERE\n", ""))
+    r = CliRunner().invoke(app, ["text", str(sample_thesis), "--provider", "local"], input="")
+    assert r.exit_code == 1 and "no %> HERE marker found" in r.output
+    monkeypatch.setattr(
+        "voxtex.providers.send_openai", ScriptedLLM({"action": "insert", "latex": "X."})
+    )
+    r = CliRunner().invoke(
+        app,
+        ["text", str(sample_thesis), "--provider", "local", "--file", "chapters/introduction.tex"],
+        input="x\n",
+    )
+    assert r.exit_code == 0, r.output
+    assert (sample_thesis / "chapters" / "introduction.tex").read_text().endswith("X.\n\n%> HERE\n")
+
+
+def test_retry_answering_replace_of_unknown_block_counts_as_insert(make_engine):
+    engine, _ = make_engine(
+        {"action": "insert", "latex": "Year 2002 \\parencite{chalkidis2020}."},
+        {"action": "replace", "block_id": "b1", "latex": "As shown \\parencite{chalkidis2020}."},
+    )
+    s = quiet(engine).feed("as chalkidis showed")
+    assert isinstance(s.decision, Insert) and s.block.note == "" and s.block.id == "b1"

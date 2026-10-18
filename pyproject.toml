@@ -15,6 +15,7 @@ dependencies = [
     "sounddevice>=0.4.7",
     "numpy>=1.26",
     "webrtcvad-wheels>=2.0.14",
+    "watchdog>=6.0.0",
 ]
 
 [project.optional-dependencies]

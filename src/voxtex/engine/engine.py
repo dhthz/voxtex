@@ -7,7 +7,7 @@ reports what it would write.
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from voxtex.config import Config
@@ -30,6 +30,7 @@ from voxtex.project.index import ProjectIndex
 from voxtex.project.labels import Label, collect_labels
 from voxtex.providers import Chain, ChainExhausted, ChainResult
 from voxtex.validate import Report, ValidationContext, Validator, labels_in
+from voxtex.validate.latin import wrap_latin
 
 MAX_PENDING_CHARS = 1200  # force a decision once this much speech is waiting
 MAX_PENDING_SECONDS = 20.0
@@ -40,6 +41,7 @@ NEARBY_CHARS = 800
 class Step:
     decision: Decision
     block: Block | None = None  # the block inserted / replaced / deleted
+    previous: Block | None = None  # replace: the block as it was before
     provider: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -66,8 +68,9 @@ def retry_feedback(report: Report) -> str:
     problems = "\n".join(f"- {i.message}" for i in report.errors)
     return (
         f"Your LaTeX has problems:\n{problems}\n"
-        "Fix them and reply with the corrected JSON object only. Don't invent replacements: "
-        "leave out a citation, reference or number that isn't available."
+        "Fix them and reply with the corrected JSON object only, keeping the same action and "
+        "block_id. Don't invent replacements: leave out a citation, reference or number that "
+        "isn't available."
     )
 
 
@@ -88,12 +91,16 @@ class Engine:
         self.location = location
         self.clock = clock
         self.buffer = Buffer()
+        # Watch mode reads context from the live file, which already holds earlier blocks.
+        self.blocks_in_location = False
 
     # --- context ---------------------------------------------------------------------------------
 
     def _nearby(self, recent: list[Block]) -> str:
         """The file before the cursor plus older blocks (recent ones are listed separately)."""
         before = self.location.before if self.location else ""
+        if self.blocks_in_location:
+            return nearby_text(before, NEARBY_CHARS)
         older = [b for b in self.buffer.blocks if b not in recent]
         written = "\n\n".join(b.latex for b in older)
         return nearby_text(before + ("\n\n" + written if written else ""), NEARBY_CHARS)
@@ -141,7 +148,7 @@ class Engine:
         step = Step(Wait(action="wait"), messages=messages)
         result: ChainResult[Decision] = self.chain.complete(messages, parse_decision)
         step.add(result)
-        decision = result.value
+        decision = self.polish(result.value)
         report = self.validate(decision, speech) if has_latex(decision) else None
 
         if report and not report.ok:
@@ -154,8 +161,16 @@ class Engine:
             try:
                 second = self.chain.complete(retry, parse_decision)
                 step.add(second)
-                if has_latex(second.value):
-                    decision = second.value
+                fixed = self.polish(second.value)
+                if (
+                    isinstance(fixed, Replace)
+                    and self.buffer.get(fixed.block_id) is None
+                    and isinstance(decision, Insert | UncertainInsert)
+                ):
+                    # The model "replaced" its own rejected insert, which was never a block.
+                    fixed = Insert(action="insert", latex=fixed.latex)
+                if has_latex(fixed):
+                    decision = fixed
                     report = self.validate(decision, speech)
             except ChainExhausted as e:
                 step.notices.append(f"retry failed: {e}")
@@ -168,6 +183,13 @@ class Engine:
         applied.messages, applied.report = messages, report
         applied.retried, applied.first_errors = step.retried, step.first_errors
         return applied
+
+    def polish(self, d: Decision) -> Decision:
+        """Deterministic fixes before validation: wrap English terms in Greek documents."""
+        wrapper = self.idx.conventions.latin_wrapper
+        if wrapper and has_latex(d):
+            return d.model_copy(update={"latex": wrap_latin(d.latex, wrapper)})
+        return d
 
     def validate(self, d: Decision, speech: str) -> Report:
         replaced_block = self.buffer.get(d.block_id) if isinstance(d, Replace) else None
@@ -218,11 +240,12 @@ class Engine:
                     )
                     fallback = UncertainInsert(action="uncertain_insert", latex=latex, note=note)
                     return Step(fallback, buf.new_block(latex, note))
-                return Step(d, buf.replace(bid, latex, problems))
+                before = replace(buf.get(bid))
+                return Step(d, buf.replace(bid, latex, problems), previous=before)
             case Delete(block_id=bid):
                 buf.clear_pending()
                 removed = buf.delete(bid)
                 if removed is None:
                     return Step(Ignore(action="ignore"), notices=[f"no block {bid} to delete"])
-                return Step(d, removed)
+                return Step(d, removed, previous=removed)
         raise AssertionError(f"unhandled decision {d!r}")

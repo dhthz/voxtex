@@ -61,6 +61,12 @@ def text(
     show_prompt: Annotated[
         bool, typer.Option("--show-prompt", help="Print the messages sent to the model.")
     ] = False,
+    file: Annotated[
+        Path | None, typer.Option("--file", help="File to write into (if there's no marker).")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would be written; change nothing.")
+    ] = False,
 ) -> None:
     """Same engine as `listen`, but reads typed lines from stdin.
 
@@ -68,13 +74,30 @@ def text(
     """
     from voxtex.textmode import run_text_mode
 
-    raise typer.Exit(run_text_mode(console, path, private, provider, show_prompt))
+    raise typer.Exit(run_text_mode(console, path, private, provider, show_prompt, file, dry_run))
 
 
 @app.command()
-def watch(path: ProjectPath = Path(".")) -> None:
+def watch(
+    path: ProjectPath = Path("."),
+    private: Annotated[
+        bool, typer.Option("--private", help="Only use private (local) providers.")
+    ] = False,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Use only this provider from the config.")
+    ] = None,
+    poll: Annotated[
+        bool | None,
+        typer.Option(
+            "--poll/--no-poll",
+            help="Poll for changes instead of file events (default: auto, on for /mnt/ drives).",
+        ),
+    ] = None,
+) -> None:
     """Convert %> lines typed by any dictation app into LaTeX on save."""
-    _not_yet("M4")
+    from voxtex.watchmode import run_watch
+
+    raise typer.Exit(run_watch(console, path, private, provider, poll))
 
 
 @app.command()
@@ -90,9 +113,33 @@ def doctor() -> None:
 
 
 @app.command()
-def undo(n: Annotated[int, typer.Argument(min=1, help="Number of writes to revert.")] = 1) -> None:
-    """Revert the last N writes."""
-    _not_yet("M4")
+def undo(
+    n: Annotated[int, typer.Argument(min=1, help="Number of writes to revert.")] = 1,
+    path: Annotated[Path, typer.Option("--path", help="Project folder.")] = Path("."),
+) -> None:
+    """Revert the last N writes (newest first), even from earlier sessions."""
+    from voxtex.io.writer import Writer
+    from voxtex.project.discover import DiscoveryError, find_main
+
+    try:
+        root = find_main(path).parent
+    except DiscoveryError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(1) from e
+    writer = Writer(root)
+    if not writer.history.pending():
+        console.print("Nothing to undo.")
+        return
+    done, problem = writer.undo(n)
+    for e in done:
+        what = {"insert": "removed", "replace": "restored", "delete": "restored"}.get(
+            e.kind, "reverted"
+        )
+        label = f" {e.block}" if e.block else ""
+        console.print(f"[green]↶[/green] {what}{label} ({e.kind}) in {e.file}")
+    if problem:
+        console.print(f"[red]✗[/red] stopped: {problem}")
+        raise typer.Exit(1)
 
 
 @app.command()
