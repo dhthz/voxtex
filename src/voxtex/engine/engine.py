@@ -61,9 +61,11 @@ class Engine:
 
     # --- context ---------------------------------------------------------------------------------
 
-    def _nearby(self) -> str:
+    def _nearby(self, recent: list[Block]) -> str:
+        """The file before the cursor plus older blocks (recent ones are listed separately)."""
         before = self.location.before if self.location else ""
-        written = "\n\n".join(b.latex for b in self.buffer.blocks)
+        older = [b for b in self.buffer.blocks if b not in recent]
+        written = "\n\n".join(b.latex for b in older)
         return nearby_text(before + ("\n\n" + written if written else ""), NEARBY_CHARS)
 
     def context(self, force: bool) -> PromptContext:
@@ -71,7 +73,7 @@ class Engine:
         recent = self.buffer.recent(3)
         # Retrieval also looks at recent blocks, so "no wait, cite the other one" still works.
         query = speech + " " + " ".join(b.latex for b in recent[-1:])
-        nearby = self._nearby()
+        nearby = self._nearby(recent)
         always = [self.idx.conventions.latin_wrapper] if self.idx.conventions.latin_wrapper else []
         return PromptContext(
             pending=speech,

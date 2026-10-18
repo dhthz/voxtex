@@ -27,3 +27,11 @@ def make_project(tmp_path):
         return root
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path, monkeypatch):
+    """Run every test from an empty directory, so a developer's .env never leaks in."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)

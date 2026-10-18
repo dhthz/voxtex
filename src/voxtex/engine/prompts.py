@@ -36,6 +36,7 @@ Rules:
 - Write {style} in {language}. The speaker may use Greek or English; never transcribe verbatim, drop fillers and false starts.
 - Never invent facts, numbers, citations or labels. Use only numbers the speaker said. Cite only keys listed under SOURCES; reference only labels listed under LABELS or created in your own output.
 - If the source or label is ambiguous, pick the best one and use uncertain_insert with a short note.
+- Keep items (table rows, list entries, compared models) in the order the speaker said them, so "the first/second one" means the same to both of you.
 - Corrections refer to the most recent block unless the speaker says otherwise; replace returns the whole rewritten block.
 - "latex" is body content only: no preamble, no \\begin{{document}}, no markdown fences, no new packages or \\newcommand.
 - Use the author's macros where they fit.
