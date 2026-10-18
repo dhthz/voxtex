@@ -50,9 +50,25 @@ def listen(path: ProjectPath = Path(".")) -> None:
 
 
 @app.command()
-def text(path: ProjectPath = Path(".")) -> None:
-    """Same engine as `listen`, but reads typed lines from stdin."""
-    _not_yet("M2")
+def text(
+    path: ProjectPath = Path("."),
+    private: Annotated[
+        bool, typer.Option("--private", help="Only use private (local) providers.")
+    ] = False,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Use only this provider from the config.")
+    ] = None,
+    show_prompt: Annotated[
+        bool, typer.Option("--show-prompt", help="Print the messages sent to the model.")
+    ] = False,
+) -> None:
+    """Same engine as `listen`, but reads typed lines from stdin.
+
+    Each line is an utterance; an empty line means "I paused" and forces a decision.
+    """
+    from voxtex.textmode import run_text_mode
+
+    raise typer.Exit(run_text_mode(console, path, private, provider, show_prompt))
 
 
 @app.command()
