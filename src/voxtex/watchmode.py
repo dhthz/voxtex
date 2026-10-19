@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from rich.console import Console
-from rich.markup import escape
+from rich.live import Live
 
 from voxtex.app import build_chain, open_project
 from voxtex.engine.buffer import Block
@@ -24,7 +24,7 @@ from voxtex.io.marker import MarkerLocation
 from voxtex.io.writer import TextSpan, Writer, read_file
 from voxtex.providers import ChainExhausted
 from voxtex.session import Session
-from voxtex.textmode import print_step
+from voxtex.ui import UI, project_row, session_summary
 
 DEBOUNCE_S = 0.3
 POLL_INTERVAL_S = 0.5
@@ -33,17 +33,18 @@ POLL_INTERVAL_S = 0.5
 class DictationProcessor:
     """Processes the %> blocks of one file at a time (no file watching; easy to test)."""
 
-    def __init__(self, engine: Engine, writer: Writer, console: Console | None = None):
+    def __init__(
+        self, engine: Engine, writer: Writer, console: Console | None = None, verbose: bool = False
+    ):
         self.engine = engine
+        self.ui = UI(console, verbose) if console else None
+        self.writes = 0
+        self.busy = False
         self.engine.blocks_in_location = True  # earlier blocks are already in the file text
         self.writer = writer
         self.session = Session(engine, writer, target=None)
         self.console = console
         self.skip: set[tuple[Path, str]] = set()  # blocks that failed; retried after an edit
-
-    def _say(self, msg: str) -> None:
-        if self.console:
-            self.console.print(msg)
 
     def process(self, path: Path) -> int:
         """Convert every %> block in `path`, top to bottom. Returns how many were handled."""
@@ -59,18 +60,22 @@ class DictationProcessor:
 
     def handle(self, path: Path, content: str, d: Dictation) -> bool:
         rel = self.writer.rel(path)
-        self._say(f"[bold]%>[/bold] {escape(rel)}:{d.line}  {escape(d.transcript)}")
+        ui = self.ui
+        if ui:
+            ui.heard(d.transcript, f"{rel}:{d.line}")
         self.engine.location = MarkerLocation(path, rel, d.line, content[: d.start])
+        self.busy = True
         try:
             step = self.engine.feed(d.transcript, force=True)
         except ChainExhausted as e:
-            self._say(f"[red]✗ {escape(str(e))}[/red] (left the %> lines as they are)")
+            if ui:
+                ui.error(f"{e} (left the %> lines as they are)")
             self.engine.buffer.clear_pending()
             return False
+        finally:
+            self.busy = False
         if step is None:
             return False
-        if self.console:
-            print_step(self.console, step, show_prompt=False)
         raw = d.raw(content)
         trailing = re.search(r"\r?\n$", raw)
         eol = trailing.group(0) if trailing else ""
@@ -82,20 +87,22 @@ class DictationProcessor:
         dec = step.decision
         if isinstance(dec, Wait):
             self.engine.buffer.clear_pending()
-            self._say("[dim]  left as is (the model thinks the thought is unfinished)[/dim]")
+            if ui:
+                ui.result("Left as is: it sounds unfinished. Add to it and save again.")
             return False
-        if isinstance(dec, Insert | UncertainInsert):
-            notices = self.session.write(step, in_place)
+        if ui:
+            ui.step(step, self.session, in_place, rel)
         else:
-            # A correction of an earlier block, a delete, or thinking aloud: apply it, then
-            # remove the %> lines themselves (undo brings them back).
-            notices = self.session.write(step, in_place) if step.block else []
+            self.session.write(step, in_place)
+        if step.block is not None:
+            self.writes += 1
+        if not isinstance(dec, Insert | UncertainInsert):
+            # A correction of an earlier block, a delete, or thinking aloud: also remove
+            # the %> lines themselves (undo brings them back).
             current = read_file(path)
             if current[d.start : d.end] == raw:
                 kind = "ignore" if isinstance(dec, Ignore) else "watch"
                 self.writer.edit(path, d.start, raw, "", kind=kind)
-        for n in notices:
-            self._say(f"[cyan]{escape(n)}[/cyan]")
         return True
 
 
@@ -105,7 +112,12 @@ def is_wsl_windows_drive(path: Path) -> bool:
 
 
 def run_watch(
-    console: Console, path: Path, private: bool, provider: str | None, poll: bool | None
+    console: Console,
+    path: Path,
+    private: bool,
+    provider: str | None,
+    poll: bool | None,
+    verbose: bool = False,
 ) -> int:
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
@@ -121,7 +133,8 @@ def run_watch(
     root = idx.root_path
     writer = Writer(root)
     engine = Engine(idx, chain, config, None)
-    proc = DictationProcessor(engine, writer, console)
+    proc = DictationProcessor(engine, writer, console, verbose)
+    ui = proc.ui
 
     use_poll = is_wsl_windows_drive(root) if poll is None else poll
     events: queue.Queue[Path] = queue.Queue()
@@ -137,11 +150,23 @@ def run_watch(
     observer = PollingObserver(timeout=POLL_INTERVAL_S) if use_poll else Observer()
     observer.schedule(Handler(), str(root), recursive=True)
     observer.start()
-    mode = "polling" if use_poll else "file events"
-    console.print(
-        f"👂 Watching {escape(str(root))} for %> lines ({mode}). "
-        "Dictate onto lines starting with %>, then save. Ctrl+C to stop."
+    mode = "polling (Windows drive)" if use_poll else "file events"
+    ui.banner(
+        [
+            ("thesis", project_row(idx)),
+            ("watching", f"{root} · {mode}"),
+            ("AI", " → ".join(p.name for p in chain.usable()) + (" (private)" if private else "")),
+        ],
+        hint="Dictate onto lines starting with %>, then save. Ctrl+C to stop.",
     )
+
+    def status():
+        if proc.busy:
+            return ui.status("Thinking", chain.active or "", hints="ctrl+c to stop")
+        return ui.status("Watching for %> lines", hints="ctrl+c to stop", active=False)
+
+    live = Live(get_renderable=status, console=console, refresh_per_second=10, transient=True)
+    live.start()
 
     # Convert anything already waiting in the project.
     for rel in idx.body_files:
@@ -172,12 +197,8 @@ def run_watch(
     except KeyboardInterrupt:
         console.print()
     finally:
+        live.stop()
         observer.stop()
         observer.join(timeout=2)
-    t = chain.totals
-    if t.calls:
-        console.print(
-            f"[dim]Session: {t.calls} calls · {t.input_tokens} in / {t.output_tokens} out "
-            "tokens[/dim]"
-        )
+    ui.done(session_summary(chain, proc.writes))
     return 0

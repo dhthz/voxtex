@@ -1,6 +1,7 @@
 """Engine with a mocked LLM: canned decisions, real prompts, real buffer updates."""
 
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -142,44 +143,59 @@ def test_prompt_budget(make_engine):
     assert estimate_tokens(llm.seen[0]) < 2000
 
 
-def test_cli_text_mode(sample_thesis, monkeypatch, tmp_path):
+def dictate(root, llm, utterances, monkeypatch, tmp_path, file=None, dry_run=False):
+    """listen without the microphone: the same workspace, engine, session and display,
+    fed transcripts directly. Returns (exit code, printed output)."""
+    from rich.console import Console
+
     from voxtex import config
-    from voxtex.cli import app
+    from voxtex.app import open_workspace
+    from voxtex.ui import UI
 
     monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+    if llm is not None:
+        monkeypatch.setattr("voxtex.providers.send_openai", llm)
+    console = Console(record=True, width=120)
+    ws = open_workspace(console, root, False, "local", file, dry_run, interactive=False)
+    if ws is None:
+        return 1, console.export_text()
+    ui = UI(console)
+    for u in utterances:
+        ui.heard(u)
+        step = ws.engine.feed(u, force=True)
+        if step is not None:
+            ui.step(step, ws.session, rel=ws.location.rel if ws.location else "")
+    return 0, console.export_text()
+
+
+def test_dictation_shows_writes(sample_thesis, monkeypatch, tmp_path):
     llm = ScriptedLLM(
         {"action": "insert", "latex": "Results are shown in \\cref{tab:baselines}."},
         {"action": "ignore"},
     )
-    monkeypatch.setattr("voxtex.providers.send_openai", llm)
-    r = CliRunner().invoke(
-        app,
-        ["text", str(sample_thesis), "--provider", "local"],
-        input="mention the baseline table\nhmm\n",
+    code, out = dictate(
+        sample_thesis, llm, ["mention the baseline table", "hmm"], monkeypatch, tmp_path
     )
-    assert r.exit_code == 0, r.output
-    assert "chapters/methodology.tex at %> HERE" in r.output
-    assert "+ inserted b1" in r.output
-    assert "ignored" in r.output
-    assert "Session: 2 calls" in r.output
+    assert code == 0, out
+    assert "Write(chapters/methodology.tex)" in out and "(b1)" in out
+    assert "Not content, nothing written" in out
     log = sample_thesis / ".voxtex" / "timings.log"
     assert len(log.read_text().splitlines()) == 2
 
 
-def test_cli_text_no_provider(sample_thesis, monkeypatch, tmp_path):
-    from voxtex import config
-    from voxtex.cli import app
-
-    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+def test_no_provider(sample_thesis, monkeypatch, tmp_path):
     for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     (sample_thesis / ".voxtex.toml").write_text('[llm]\nchain = ["groq-gptoss"]\n')
-    r = CliRunner().invoke(app, ["text", str(sample_thesis)], input="")
-    assert r.exit_code == 1
-    assert "no usable AI provider" in r.output
+    from rich.console import Console
 
+    from voxtex import config
+    from voxtex.app import open_workspace
 
-# --- validation + retry (M3) --------------------------------------------------------------------
+    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+    console = Console(record=True, width=120)
+    assert open_workspace(console, sample_thesis, False, None, None, False, False) is None
+    assert "no usable AI provider" in console.export_text()
 
 
 def quiet(engine):
@@ -255,12 +271,10 @@ def test_labels_from_this_session_are_offered(make_engine):
     assert s.report.ok  # referencing a label from an earlier block validates
 
 
-def test_cli_text_writes_file_and_undo_restores(sample_thesis, monkeypatch, tmp_path):
-    """M4 acceptance: text mode writes into the real file; undo restores the exact content."""
-    from voxtex import config
+def test_dictation_writes_file_and_undo_restores(sample_thesis, monkeypatch, tmp_path):
+    """M4 acceptance: dictation writes into the real file; undo restores the exact content."""
     from voxtex.cli import app
 
-    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
     (sample_thesis / ".voxtex.toml").write_text('[validate]\ncompile = "off"\n')
     f = sample_thesis / "chapters" / "methodology.tex"
     original = f.read_text()
@@ -273,13 +287,12 @@ def test_cli_text_writes_file_and_undo_restores(sample_thesis, monkeypatch, tmp_
             "note": "2019 or 2020?",
         },
     )
-    monkeypatch.setattr("voxtex.providers.send_openai", llm)
-    r = CliRunner().invoke(
-        app,
-        ["text", str(sample_thesis), "--provider", "local"],
-        input="legal bert reaches 0.71\nno, 0.73\ncite chalkidis\n",
-    )
-    assert r.exit_code == 0, r.output
+    code, out = dictate(
+        sample_thesis, llm, ["legal bert reaches 0.71", "no, 0.73", "cite chalkidis"],
+        monkeypatch, tmp_path,
+    )  # fmt: skip
+    assert code == 0, out
+    assert "Update(chapters/methodology.tex)" in out
     text = f.read_text()
     assert (
         "\\legalbert reaches 0.73.\n\nSee \\parencite{chalkidis2019}.\n"
@@ -293,42 +306,25 @@ def test_cli_text_writes_file_and_undo_restores(sample_thesis, monkeypatch, tmp_
     assert f.read_text() == original
 
 
-def test_cli_text_dry_run_changes_nothing(sample_thesis, monkeypatch, tmp_path):
-    from voxtex import config
-    from voxtex.cli import app
-
-    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+def test_dry_run_changes_nothing(sample_thesis, monkeypatch, tmp_path):
     f = sample_thesis / "chapters" / "methodology.tex"
     original = f.read_text()
-    monkeypatch.setattr(
-        "voxtex.providers.send_openai", ScriptedLLM({"action": "insert", "latex": "X."})
-    )
-    r = CliRunner().invoke(
-        app, ["text", str(sample_thesis), "--provider", "local", "--dry-run"], input="x\n"
-    )
-    assert r.exit_code == 0 and "+ inserted b1" in r.output
+    llm = ScriptedLLM({"action": "insert", "latex": "X."})
+    code, out = dictate(sample_thesis, llm, ["x"], monkeypatch, tmp_path, dry_run=True)
+    assert code == 0 and "b1: would add 1 line" in out
     assert f.read_text() == original
     assert not (sample_thesis / ".voxtex" / "history.jsonl").exists()
 
 
-def test_cli_text_without_marker_needs_file(sample_thesis, monkeypatch, tmp_path):
-    from voxtex import config
-    from voxtex.cli import app
-
-    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "noconfig")
+def test_without_marker_needs_file(sample_thesis, monkeypatch, tmp_path):
     m = sample_thesis / "chapters" / "methodology.tex"
     m.write_text(m.read_text().replace("%> HERE\n", ""))
-    r = CliRunner().invoke(app, ["text", str(sample_thesis), "--provider", "local"], input="")
-    assert r.exit_code == 1 and "no %> HERE marker found" in r.output
-    monkeypatch.setattr(
-        "voxtex.providers.send_openai", ScriptedLLM({"action": "insert", "latex": "X."})
-    )
-    r = CliRunner().invoke(
-        app,
-        ["text", str(sample_thesis), "--provider", "local", "--file", "chapters/introduction.tex"],
-        input="x\n",
-    )
-    assert r.exit_code == 0, r.output
+    code, out = dictate(sample_thesis, None, [], monkeypatch, tmp_path)
+    assert code == 1 and "no %> HERE marker found" in out
+    llm = ScriptedLLM({"action": "insert", "latex": "X."})
+    intro = Path("chapters/introduction.tex")
+    code, out = dictate(sample_thesis, llm, ["x"], monkeypatch, tmp_path, file=intro)
+    assert code == 0, out
     assert (sample_thesis / "chapters" / "introduction.tex").read_text().endswith("X.\n\n%> HERE\n")
 
 

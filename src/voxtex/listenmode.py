@@ -17,28 +17,15 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.live import Live
-from rich.markup import escape
-from rich.text import Text
 
-from voxtex.app import build_chain, choose_target, location_in, offer_gitignore, open_project
-from voxtex.audio.capture import (
-    MicError,
-    Microphone,
-    Segmenter,
-    Utterance,
-    pick_device,
-    prefer_parec,
-    webrtc_vad,
-)
+from voxtex.app import open_workspace
+from voxtex.audio.capture import MicError, Segmenter, Utterance, open_microphone, webrtc_vad
 from voxtex.audio.stt import SttChoice, Transcriber, Transcript, build_transcriber, choose_stt
 from voxtex.audio.turns import TurnTimer, is_filler
 from voxtex.engine.decide import Wait
-from voxtex.engine.engine import Engine
-from voxtex.io.writer import Writer
 from voxtex.project.index import STATE_DIR, ProjectIndex, _is_spoken_term
 from voxtex.providers import ChainExhausted
-from voxtex.session import Session
-from voxtex.textmode import print_step
+from voxtex.ui import UI, mic_bar, project_row, session_summary, target_row
 
 HINT_SURNAMES = 25
 HINT_TERMS = 30
@@ -74,8 +61,15 @@ class Heard:
 class SpeechToText(threading.Thread):
     """Transcribes utterances in order. Falls back to local CPU Whisper if the cloud fails."""
 
-    def __init__(self, transcriber: Transcriber, prompt: str, fallback: Transcriber | None = None):
+    def __init__(
+        self,
+        transcriber: Transcriber,
+        prompt: str,
+        fallback: Transcriber | None = None,
+        root: Path | None = None,
+    ):
         super().__init__(daemon=True)
+        self.root = root  # if set, every transcript is logged to .voxtex/timings.log
         self.transcriber = transcriber
         self.fallback = fallback
         self.prompt = prompt
@@ -105,6 +99,12 @@ class SpeechToText(threading.Thread):
                 self.notice = f"↪ speech-to-text switched to {self.fallback.name} ({e})"
                 self.transcriber, self.fallback = self.fallback, None
                 t = self.transcriber.transcribe(u.audio, self.prompt)
+            if self.root is not None:
+                _log(self.root, {
+                    "ts": round(time.time(), 3), "kind": "stt", "backend": t.backend,
+                    "language": t.language, "audio_s": round(t.audio_seconds, 2),
+                    "latency_ms": round(t.seconds * 1000), "text": t.text,
+                })  # fmt: skip
             self.outbox.put(Heard(t.text, u, t))
             self.busy = False
 
@@ -128,93 +128,99 @@ def run_listen(
     dry_run: bool,
     stt_mode: str | None,
     mic: str | None,
+    verbose: bool = False,
 ) -> int:
     interactive = sys.stdin.isatty()
-    opened = open_project(console, path)
-    if opened is None:
+    ui = UI(console, verbose)
+    ws = open_workspace(console, path, private, provider, file_opt, dry_run, interactive)
+    if ws is None:
         return 1
-    idx, config = opened
-    chain = build_chain(console, idx, config, private, provider)
-    if chain is None:
-        return 1
-    root = idx.root_path
+    idx, config, chain, engine, location, session = (
+        ws.idx,
+        ws.config,
+        ws.chain,
+        ws.engine,
+        ws.location,
+        ws.session,
+    )
+    root = ws.root
 
     choice: SttChoice = choose_stt(config, private, stt_mode)
-    console.print(f"[green]✓[/green] Speech: {choice.label} [dim]({choice.reason})[/dim]")
     transcriber = build_transcriber(choice, config, stt_languages(idx))
     fallback = None
     if choice.kind != "local":
         fallback = build_transcriber(SttChoice("local", "small", "cpu"), config)
 
-    session = None
-    if dry_run:
-        target = (root / file_opt) if file_opt else None
-        location = location_in(root, target) if target else None
-    else:
-        target = choose_target(console, idx, file_opt, interactive)
-        if target is None:
-            return 1
-        offer_gitignore(console, root, interactive)
-        writer = Writer(root)
-        writer.ensure_marker(target)
-        location = location_in(root, target)
-    engine = Engine(idx, chain, config, location)
-    if not dry_run:
-        session = Session(engine, writer, target)
-
     wanted = mic if mic is not None else config.mic
     try:
         segmenter = Segmenter(webrtc_vad(), pause_s=config.utterance_pause)
-        if prefer_parec() and not wanted.isdigit():
-            microphone = Microphone(segmenter, backend="parec", source=wanted)
-        else:
-            microphone = Microphone(segmenter, pick_device(wanted))
+        microphone = open_microphone(segmenter, wanted)
     except MicError as e:
-        console.print(f"[red]✗[/red] {e}. Try [bold]voxtex listen --list-mics[/bold].")
+        ui.error(f"{e}. Try voxtex listen --list-mics")
         return 1
 
     if choice.kind == "local":
-        with console.status(f"Loading {choice.model} (downloads once on first use)…"):
+        with console.status(
+            f"[grey50]Loading {choice.model} (downloads once on first use)…[/grey50]",
+            spinner="dots", spinner_style="#d77757",
+        ):  # fmt: skip
             transcriber.load()
-    stt = SpeechToText(transcriber, whisper_prompt(idx), fallback)
+    stt = SpeechToText(transcriber, whisper_prompt(idx), fallback, root)
     stt.start()
     try:
         microphone.start()
     except MicError as e:
-        console.print(f"[red]✗[/red] {e}")
+        ui.error(str(e))
         return 1
 
     lang = idx.conventions.language if config.language == "auto" else config.language
-    where = f"{location.rel} at %> HERE" if location else "(dry run)"
-    console.print(f"🎙  Listening → {where}   (style: {config.style}, lang: {lang})")
-    console.print("[dim]   Speak freely; pause to let it write. Ctrl+C to stop.[/dim]")
+    where = target_row(location.rel, location.line, location.found) if location else "(no target)"
+    if dry_run:
+        where += "  · dry run, nothing is written"
+    ui.banner(
+        [
+            ("thesis", project_row(idx)),
+            ("writing", where),
+            ("AI", " → ".join(p.name for p in chain.usable()) + (" (private)" if private else "")),
+            ("speech", f"{choice.label} · {lang} · {config.style}"),
+        ],
+        hint="Speak freely; pause and it writes. Ctrl+C to stop.",
+    )
 
     timer = TurnTimer(config.decision_pause, config.max_pending_seconds)
     latencies: list[float] = []
+    writes = 0
     speech_end = 0.0  # end of the last utterance that's part of the pending speech
     state = {"what": "listening"}
 
-    def status() -> Text:
+    verbs = {"listening": "Listening", "hearing": "Hearing", "transcribing": "Transcribing",
+             "thinking": "Thinking", "writing": "Writing"}  # fmt: skip
+
+    def status():
         what = state["what"]
         if what == "listening" and microphone.speaking:
             what = "hearing"
         elif what == "listening" and (stt.busy or not microphone.utterances.empty()):
             what = "transcribing"
-        bar = "▁▂▃▄▅▆▇█"[min(7, int(microphone.level * 8))]
         prov = chain.active or (chain.usable()[0].name if chain.usable() else "no AI")
         left = chain.quota.remaining_tokens(prov)
         quota = f" · ~{left // 1000}K tok left" if left and left >= 1000 else ""
-        pending = engine.buffer.pending_text
-        tail = f" · “{pending[-60:]}”" if pending else ""
-        return Text(f"🎙 {bar} {what} · {prov}{quota}{tail}", style="dim")
+        return ui.status(
+            verbs[what],
+            f"{prov}{quota}",
+            speech=engine.buffer.pending_text,
+            hints=f"{mic_bar(microphone.level)} mic · ctrl+c to stop",
+            active=what != "listening",
+        )
 
     def decide(force: bool) -> None:
-        nonlocal speech_end
+        nonlocal speech_end, writes
+        said = engine.buffer.pending_text
         state["what"] = "thinking"
         try:
             step = engine.feed("", force=force)
         except ChainExhausted as e:
-            console.print(f"[red]✗ {escape(str(e))}[/red] (speech kept)")
+            ui.error(f"{e} (speech kept)")
             state["what"] = "listening"
             return
         state["what"] = "listening"
@@ -223,21 +229,17 @@ def run_listen(
         if isinstance(step.decision, Wait):
             timer.model_waited(engine.buffer.pending_text)
             return
-        print_step(console, step, show_prompt=False)
+        ui.heard(said)
+        state["what"] = "writing"
+        ui.step(step, session, rel=location.rel if location else "")
+        state["what"] = "listening"
         written = time.monotonic()
-        if session:
-            state["what"] = "writing"
-            try:
-                for n in session.write(step):
-                    console.print(f"[cyan]{escape(n)}[/cyan]")
-            except OSError as e:
-                console.print(f"[red]✗ could not write: {escape(str(e))}[/red]")
-            written = time.monotonic()
-            state["what"] = "listening"
         if step.block is not None:
+            writes += 1
             latency = written - speech_end
             latencies.append(latency)
-            console.print(f"[dim]  ⏱ {latency:.1f}s from end of speech to file[/dim]")
+            if verbose:
+                ui.more(f"{latency:.1f}s from end of speech to file", "grey37")
             _log(root, {
                 "ts": round(time.time(), 3), "kind": "utterance",
                 "end_to_write_ms": round(latency * 1000), "llm_ms": round(step.latency_s * 1000),
@@ -247,7 +249,8 @@ def run_listen(
             })  # fmt: skip
 
     try:
-        with Live(status(), console=console, refresh_per_second=8, transient=True) as live:
+        # get_renderable: the spinner keeps moving while the main thread waits on the model.
+        with Live(get_renderable=status, console=console, refresh_per_second=10, transient=True):
             while True:
                 while not microphone.utterances.empty():
                     stt.inbox.put(microphone.utterances.get())
@@ -256,7 +259,7 @@ def run_listen(
                 except queue.Empty:
                     heard = None
                 if stt.notice:
-                    console.print(f"[cyan]{escape(stt.notice)}[/cyan]")
+                    ui.notice(stt.notice)
                     stt.notice = ""
                 if heard is not None and heard.transcript is not None:
                     t = heard.transcript
@@ -266,7 +269,6 @@ def run_listen(
                         "audio_ms": round(t.audio_seconds * 1000),
                     })  # fmt: skip
                     if heard.text and not is_filler(heard.text, stt.prompt):
-                        console.print(f"[dim]  “{escape(heard.text)}”[/dim]")
                         engine.buffer.add_utterance(heard.text, heard.utterance.started)
                         speech_end = heard.utterance.ended
                 now = time.monotonic()
@@ -280,7 +282,6 @@ def run_listen(
                 )
                 if go:
                     decide(force)
-                live.update(status())
     except KeyboardInterrupt:
         pass
     finally:
@@ -294,16 +295,9 @@ def run_listen(
         if hasattr(t, "unload"):
             t.unload()
 
-    t = chain.totals
-    if t.calls:
-        console.print(
-            f"[dim]Session: {t.calls} calls · {t.input_tokens} in / {t.output_tokens} out tokens"
-            f" (avg {t.input_tokens // t.calls} in/call)[/dim]"
-        )
+    extra = ""
     if latencies:
         p90 = sorted(latencies)[int(0.9 * (len(latencies) - 1))]
-        console.print(
-            f"[dim]Latency end of speech → file: median {statistics.median(latencies):.1f}s,"
-            f" p90 {p90:.1f}s over {len(latencies)} writes[/dim]"
-        )
+        extra = f"speech→file median {statistics.median(latencies):.1f}s, p90 {p90:.1f}s"
+    ui.done(session_summary(chain, writes, extra, verbose))
     return 0
