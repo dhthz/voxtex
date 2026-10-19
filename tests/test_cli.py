@@ -9,8 +9,9 @@ runner = CliRunner()
 def test_help_lists_all_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("listen", "text", "watch", "init", "doctor", "undo", "index"):
+    for cmd in ("listen", "watch", "init", "doctor", "undo", "index"):
         assert cmd in result.output
+    assert "│ text " not in result.output  # voice only: there's no typing mode
 
 
 def test_version():

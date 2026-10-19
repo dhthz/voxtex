@@ -17,6 +17,7 @@ dependencies = [
     "webrtcvad-wheels>=2.0.14",
     "watchdog>=6.0.0",
     "faster-whisper>=1.0",
+    "textual>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,7 @@ packages = ["src/voxtex"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.24",
     "ruff>=0.6",
 ]
 
@@ -52,3 +54,4 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
