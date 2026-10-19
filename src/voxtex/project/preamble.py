@@ -137,6 +137,17 @@ def parse_packages(sources: list[SourceFile]) -> tuple[str, list[str], list[Pack
     return docclass, class_opts, packages
 
 
+def _bookmark_only(text: str) -> list[tuple[int, int]]:
+    """Where `\\pdfstringdefDisableCommands{...}` redefines commands for PDF bookmarks only
+    (`\\def\\en#1{#1}`). Those aren't what the commands do in the document."""
+    spans = []
+    for m in find_commands(text, "pdfstringdefDisableCommands"):
+        g = read_group(text, m.end())
+        if g:
+            spans.append((m.end(), g[1]))
+    return spans
+
+
 def parse_macros(sources: list[SourceFile]) -> tuple[list[Macro], list[Environment]]:
     macros: dict[str, Macro] = {}
     envs: dict[str, Environment] = {}
@@ -147,6 +158,7 @@ def parse_macros(sources: list[SourceFile]) -> tuple[list[Macro], list[Environme
 
     for f in sources:
         t, src = f.text, f.rel
+        bookmarks = _bookmark_only(t)
 
         for m in find_commands(t, _NEWCMD):
             na = read_name_arg(t, m.end())
@@ -198,6 +210,8 @@ def parse_macros(sources: list[SourceFile]) -> tuple[list[Macro], list[Environme
             )
 
         for m in _DEF.finditer(t):
+            if any(a <= m.start() < b for a, b in bookmarks):
+                continue
             body = read_group(t, m.end() - 1)
             add(
                 Macro(
@@ -210,6 +224,8 @@ def parse_macros(sources: list[SourceFile]) -> tuple[list[Macro], list[Environme
             )
 
         for m in _LET.finditer(t):
+            if any(a <= m.start() < b for a, b in bookmarks):
+                continue
             add(Macro(name=m.group(1), kind="let", source=src))
 
         for m in find_commands(t, _NEWENV):

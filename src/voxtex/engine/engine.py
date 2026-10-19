@@ -5,6 +5,7 @@ File writing arrives in M4; for now the engine keeps the written blocks in memor
 reports what it would write.
 """
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,7 @@ from voxtex.project.index import ProjectIndex
 from voxtex.project.labels import Label, collect_labels
 from voxtex.providers import Chain, ChainExhausted, ChainResult
 from voxtex.validate import Report, ValidationContext, Validator, labels_in
+from voxtex.validate.base import CITE_CMDS, REF_CMDS
 from voxtex.validate.citations import normalize_cite_keys
 from voxtex.validate.latin import wrap_latin
 
@@ -70,6 +72,22 @@ class Step:
         self.output_tokens += r.output_tokens
         self.latency_s += r.latency_s
         self.notices += r.notices
+
+
+_ONLY_CITATIONS = re.compile(
+    rf"^\s*(?:~?\\(?:{CITE_CMDS}|{REF_CMDS})\*?(?:\[[^\]]*\])*\{{[^{{}}]*\}}\s*)+$"
+)
+_END_PUNCTUATION = re.compile(r"[.,;:!?·]*\s*$")
+
+
+def keep_selection(selected: str, latex: str) -> str:
+    """A model asked to "cite X here" sometimes returns only the citation, which would wipe
+    out the selected text. A reply that is only citations or references is added to the
+    selection (before its final punctuation), never put in its place."""
+    if not _ONLY_CITATIONS.match(latex) or not selected.strip() or latex.strip() in selected:
+        return latex
+    end = _END_PUNCTUATION.search(selected).start()
+    return f"{selected[:end].rstrip()} {latex.strip()}{selected[end:]}"
 
 
 def has_latex(d: Decision) -> bool:
@@ -258,6 +276,15 @@ class Engine:
         block = self.buffer.new_block(latex, f"written as heard ({why})")
         return Step(UncertainInsert(action="uncertain_insert", latex=latex, note=block.note), block)
 
+    def verbatim(self, speech: str, selected: str = "") -> Step:
+        """Raw words: what was said, exactly as heard (only LaTeX-escaped), with no model.
+        It replaces the selection if there is one."""
+        latex = escape_plain(speech)
+        if selected:
+            d = Replace(action="replace", block_id=SELECTION_ID, latex=latex)
+            return Step(d, Block(SELECTION_ID, latex), Block(SELECTION_ID, selected))
+        return Step(Insert(action="insert", latex=latex), self.buffer.new_block(latex))
+
     def command(self, instruction: str, selected: str, before: str) -> Step:
         """Change the selected text as the speaker asked. Returns a Replace of block `sel`,
         or Ignore (with a notice) if the model gave nothing usable."""
@@ -273,8 +300,9 @@ class Engine:
         if not has_latex(decision):
             return Step(Ignore(action="ignore"), notices=["The selection was left as it was."])
         problems = "; ".join(i.message for i in report.errors) if report else ""
-        block = Block(SELECTION_ID, decision.latex, problems)
-        d = Replace(action="replace", block_id=SELECTION_ID, latex=decision.latex)
+        latex = keep_selection(selected, decision.latex)
+        block = Block(SELECTION_ID, latex, problems)
+        d = Replace(action="replace", block_id=SELECTION_ID, latex=latex)
         return self._finish(Step(d, block, previous), step, messages, report)
 
     def polish(self, d: Decision) -> Decision:

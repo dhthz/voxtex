@@ -185,6 +185,28 @@ async def test_doubts_become_a_toast_not_a_latex_comment(editor):
         assert app.area.fresh[-1][3] == "voxtex.unsure"
 
 
+async def test_cite_here_keeps_the_selected_text(editor):
+    app, path, llm = editor
+    async with app.run_test() as pilot:
+        area = app.area
+        area.move_cursor((len(area.document.lines) - 1, 0))
+        llm.replies.append({"action": "insert", "latex": "Legal models do well."})
+        await talk(app, pilot, "legal models do well")
+        row = next(i for i, ln in enumerate(area.document.lines) if "do well." in ln)
+        area.selection = ((row, 0), (row, len(area.document.lines[row])))
+        # The model forgets the text and returns only the citation.
+        llm.replies.append(
+            {"action": "replace", "block_id": "sel", "latex": "\\parencite{chalkidis2019}"}
+        )
+        await talk(app, pilot, "cite Chalkidis here")
+        assert "Legal models do well \\parencite{chalkidis2019}." in path.read_text()
+        # "undo" works with a selection too, without asking the model.
+        area.selection = ((row, 0), (row, 5))
+        await talk(app, pilot, "undo")
+        assert "Legal models do well." in path.read_text()
+        assert len(llm.seen) == 2
+
+
 async def test_noise_is_not_written_and_says_what_was_heard(editor):
     app, path, llm = editor
     async with app.run_test(notifications=True) as pilot:
@@ -231,3 +253,101 @@ def test_pill_wave_grows_from_the_middle():
     wave = pill.pill_content(pill.HEARING, [0.0] * 8 + [1.0], 0).plain.split(" ")
     assert wave[len(wave) // 2] == "█"
     assert wave[0] == wave[-1] == pill.LEVELS[1]
+
+
+async def test_esc_closes_the_file_menu_and_enter_opens_a_file(editor):
+    app, path, llm = editor
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.1)
+        assert len(app.screen_stack) == 2
+        await pilot.press("escape")  # never trapped: esc always goes back
+        await pilot.pause(0.1)
+        assert len(app.screen_stack) == 1
+        await pilot.press("ctrl+o")
+        await pilot.press(*"intro")  # type to filter
+        await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app.rel == "chapters/introduction.tex"
+
+
+def test_file_tree_lists_every_tex_file_by_folder(tmp_path):
+    from voxtex.editor.menus import tex_files
+
+    for f in ("main.tex", "ch/a.tex", "ch/b.tex", ".voxtex/x.tex", "build/y.tex", "ch/c.bib"):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("")
+    assert tex_files(tmp_path) == ["main.tex", "ch/a.tex", "ch/b.tex"]
+
+
+async def test_unfiltered_skips_the_ai(editor):
+    app, path, llm = editor
+    async with app.run_test() as pilot:
+        area = app.area
+        area.move_cursor((len(area.document.lines) - 1, 0))
+        await pilot.press("ctrl+t")
+        await talk(app, pilot, "it reaches 50% , cite chalkidis")
+        assert r"it reaches 50\% , cite chalkidis" in path.read_text()
+        assert llm.seen == []
+    assert app.unfiltered  # remembered for this thesis
+    from voxtex.editor.app import _load_state
+
+    assert _load_state(app.root)["unfiltered"] is True
+
+
+def test_usage_panel_shows_only_what_is_in_use():
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from voxtex.editor.usage import GpuSample, Usage, render, spark
+    from voxtex.providers import Chain
+
+    assert spark([1, 2, 4, 8], 6) == "  ▁▂▄█"
+    console = Console(width=34, record=True)
+    u = Usage()
+    console.print(render(u, None, 34))
+    assert "nothing to show yet" in console.export_text()
+    chain = Chain([SimpleNamespace(name="groq")])
+    chain.active, chain.totals.calls = "groq", 3
+    u.latency.append(0.8)
+    u.gpu = GpuSample("RTX 3060", 40, 4096, 12288)  # a GPU, but nothing uses it
+    console.print(render(u, chain, 34))
+    text = console.export_text()
+    assert "groq" in text and "latency" in text and "gpu" not in text
+    u.gpu_used = True
+    console.print(render(u, chain, 34))
+    assert "RTX 3060" in console.export_text()
+
+
+async def test_theme_picker_previews_and_keeps_the_choice(editor):
+    from voxtex.editor.app import _load_settings
+    from voxtex.editor.palette import THEMES
+
+    app, path, llm = editor
+    assert app.theme_name == "charcoal" and len(THEMES) > 10
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+p")
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        previewed = app.theme_name
+        assert previewed != "charcoal"  # moving previews the theme
+        await pilot.press("escape")  # esc goes back to the one you had
+        await pilot.pause(0.1)
+        assert app.theme_name == "charcoal" and len(app.screen_stack) == 1
+        await pilot.press("ctrl+p", "down", "enter")
+        await pilot.pause(0.1)
+        assert app.theme_name == previewed
+    assert _load_settings()["theme"] == previewed  # kept for every thesis
+
+
+def test_every_theme_has_a_full_palette():
+    from textual.color import Color
+
+    from voxtex.editor.palette import THEMES
+
+    for name, (theme, pal) in THEMES.items():
+        for value in pal.css().values():
+            Color.parse(value)  # raises on a bad colour
+        assert theme.variables["vx-accent"] == pal.accent, name

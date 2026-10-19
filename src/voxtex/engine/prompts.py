@@ -78,7 +78,8 @@ Reply with exactly one JSON object and nothing else:
 
 Rules:
 - Change only what the instruction asks for; leave the rest of the selection exactly as it is.
-- If they just said new text rather than an instruction (a number, a word, a sentence), it replaces the selection, formatted as LaTeX.
+- Adding something ("cite Zhao here", "reference the figure", "add a footnote") keeps all of the selected text and adds to it. A citation or reference goes at the end of the selection, before its final punctuation, unless they say where.
+- Only if they just said new text rather than an instruction (a number, a word, a sentence) does it replace the selection, formatted as LaTeX.
 - Rewrites ("more formal", "shorter") use {style} in {language}.
 - Never invent facts, numbers, citations or labels. Cite only keys under SOURCES; reference only labels under LABELS.
 - "latex" is body content only: no preamble, no markdown fences, no new packages or \\newcommand. Use the author's macros where they fit.

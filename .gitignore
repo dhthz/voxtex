@@ -23,5 +23,7 @@ build/
 # Real thesis used for manual testing (kept out of the repo)
 test_thesis/
 
+# For now it will be brough back later with docs
+/md
 # Local secrets (API keys)
 .env

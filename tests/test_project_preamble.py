@@ -96,3 +96,18 @@ def test_macro_body_and_uses():
     assert bodies == {"\\en": "\\foreignlanguage{english}{#1}", "\\x": "y", "\\enx": ""}
     count_macro_uses(p.macros, [SourceFile(Path("c.tex"), "\\en{a} \\en{b} \\enx \\english")])
     assert {m.name: m.uses for m in p.macros} == {"\\en": 2, "\\x": 0, "\\enx": 1}
+
+
+def test_bookmark_only_definitions_are_ignored():
+    from voxtex.project.discover import SourceFile
+    from voxtex.project.preamble import parse_macros
+
+    text = (
+        "\\pdfstringdefDisableCommands{\\def\\en#1{#1}\\let\\tl\\relax}\n"
+        "\\newcommand{\\tl}[1]{\\textlatin{#1}}\n"
+        "\\newcommand{\\en}[1]{\\foreignlanguage{english}{#1}}\n"
+    )
+    macros, _ = parse_macros([SourceFile(Path("main.tex"), text)])
+    bodies = {m.name: m.body for m in macros}
+    assert bodies["\\en"] == "\\foreignlanguage{english}{#1}"
+    assert bodies["\\tl"] == "\\textlatin{#1}"

@@ -1,4 +1,5 @@
-"""`voxtex init`: speech, free AI keys (tested right away), local fallback, privacy, microphone.
+"""`voxtex init`: what this machine has, privacy, a free AI key (tested right away), speech,
+the local fallback and the microphone.
 
 Settings go to ~/.config/voxtex/config.toml and keys to ~/.config/voxtex/.env (mode 600),
 so they apply to every thesis. Every step can be skipped; running it again keeps what's
@@ -113,117 +114,132 @@ def run_init(
     global_dir: Path | None = None,
     mic_test=None,
 ) -> int:
+    """Look at the machine first, then ask only what it can't decide: privacy, an AI key,
+    and (without a GPU) where speech runs. Enter always takes the suggestion."""
     ask = ask or Prompts(console)
     gdir = global_dir or GLOBAL_CONFIG
     cfg_path, env_path = gdir / CONFIG_FILE, gdir / ENV_FILE
     data = read_config(cfg_path)
     config = load_config(None, global_dir=gdir)
-
-    console.print(
-        "[bold]voxtex setup[/bold] [dim](Enter keeps the default; any step can be skipped)[/dim]\n"
-    )
-
-    # 1. Speech
     from voxtex.audio.stt import cuda_available
 
     gpu = cuda_available()
-    voxtype = shutil.which("voxtype") is not None
-    console.print("[bold]1. Speech[/bold]")
-    if voxtype:
-        console.print("  voxtype is installed: watch mode lets you keep dictating with it.")
-    local_note = "fast on your NVIDIA GPU" if gpu else "no GPU found, so slower and weaker in Greek"
-    speech = ask.choice(
-        "How do you want to dictate?",
-        [
-            ("local", f"Local Whisper: free, private ({local_note})"),
-            ("external", "My own dictation app, typing %> lines (voxtex watch)"),
-            ("groq", "Groq's cloud Whisper: fast without a GPU; audio leaves this machine"),
-        ],
-        default="external" if voxtype else ("local" if gpu else "groq"),
+    ollama = shutil.which("ollama") is not None
+    cloud = [
+        (env, name, why, p)
+        for env, name, why in CLOUD_KEYS
+        for p in [next((q for q in config.providers.values()
+                        if q.api_key_env == env and not q.private), None)]
+        if p is not None
+    ]  # fmt: skip
+    keys_set = [env for env, _, _, p in cloud if p.resolve_key()]
+
+    console.print("[bold]voxtex setup[/bold] [dim]· Enter takes the suggestion[/dim]\n")
+    _found(console, "GPU", gpu, "NVIDIA: speech runs here, fast and private",
+           "none: speech is slower here, or runs on Groq")  # fmt: skip
+    _found(console, "Ollama", ollama, "installed: a local AI for offline and --private",
+           "not installed (optional)")  # fmt: skip
+    _found(console, "AI keys", bool(keys_set), ", ".join(_key_name(e) for e in keys_set),
+           "none yet")  # fmt: skip
+
+    # 1. Privacy decides whether the cloud questions are asked at all.
+    _step(console, 1, "Privacy")
+    strict = ask.confirm(
+        "  Keep everything on this machine? (local AI and speech only; for unpublished work)",
+        data.get("privacy") == "strict",
     )
+    data["privacy"] = "strict" if strict else "normal"
+
+    # 2. AI: one key is enough; more are fallbacks.
+    have_keys = list(keys_set)
+    if not strict:
+        _step(console, 2, "AI", "free keys; each is tested now")
+        for n, (env, name, why, provider) in enumerate(cloud):
+            if n == 1 and not ask.confirm("  Add fallback keys (Gemini, OpenRouter)?", False):
+                break
+            _ask_key(console, ask, env, name, why, provider, lister, env_path, have_keys)
+
+    # 3. Speech: decided by the machine; asked only when there's a real choice.
+    _step(console, 3, "Speech")
+    if gpu or strict:
+        speech = "local"
+    elif "GROQ_API_KEY" in have_keys:
+        cloud_ok = ask.confirm(
+            "  No GPU: use Groq's Whisper (fast; your audio is sent to Groq)?", True
+        )
+        speech = "groq" if cloud_ok else "local"
+    else:
+        speech = "local"
+    if data.get("stt", {}).get("mode") == "external" and speech == "local":
+        speech = "external"  # set up for another dictation app (voxtex watch): keep it
     _set(data, "stt.mode", speech)
-    if speech == "external" and voxtype:
-        console.print(
-            "  [dim]For Greek, pick a multilingual voxtype model: voxtype setup model[/dim]"
-        )
+    console.print("  " + {
+        "local": "Whisper on " + ("your GPU (large-v3-turbo)" if gpu else "the CPU (small)"),
+        "groq": "Groq's Whisper (large-v3-turbo, in the cloud)",
+        "external": "your own dictation app, with voxtex watch",
+    }[speech])  # fmt: skip
 
-    # 2. Cloud AI keys
-    console.print("\n[bold]2. AI providers[/bold] [dim](keys are free; each is tested now)[/dim]")
-    have_keys = []
-    for env, name, why in CLOUD_KEYS:
-        provider = next(
-            (p for p in config.providers.values() if p.api_key_env == env and not p.private), None
-        )
-        if provider is None:
-            continue
-        existing = provider.resolve_key()
-        if existing and ask.confirm(f"  {name}: a key is already set. Keep it?", True):
-            have_keys.append(env)
-            continue
-        console.print(f"  {name} ({why}): get a key at {KEY_URLS.get(env, '')}")
-        for _attempt in range(2):
-            key = ask.secret(f"  Paste your {env} (Enter to skip)")
-            if not key:
-                break
-            result = check_provider(provider.model_copy(update={"api_key": key}), lister)
-            _print_result(console, result)
-            if result.status in ("ok", "warn"):  # warn: e.g. offline now; the key may be fine
-                save_env_value(env_path, env, key)
-                os.environ[env] = key  # so the steps below and the summary see it
-                have_keys.append(env)
-                break
-
-    # 3. Local fallback (Ollama)
-    console.print(
-        "\n[bold]3. Local AI[/bold] [dim](works with no internet and for --private)[/dim]"
-    )
+    # 4. Local AI
     local = config.providers.get("local")
-    if local is not None:
+    if local is not None and (ollama or strict):
+        _step(console, 4, "Local AI", "offline and --private")
         _setup_local(console, ask, local, data, lister)
-
-    # 4. Privacy
-    console.print("\n[bold]4. Privacy[/bold]")
-    console.print(
-        "  Normal sends what you say, plus a little nearby text, to the cloud providers above;"
-        " strict keeps everything on this machine (local Whisper and Ollama only)."
-    )
-    privacy = ask.choice(
-        "Privacy",
-        [
-            ("normal", "Normal: free cloud first, local as the fallback"),
-            ("strict", "Strict: local only, for unpublished work"),
-        ],  # fmt: skip
-        default=data.get("privacy", "normal"),
-    )
-    data["privacy"] = privacy
-    if privacy == "strict" and speech == "groq":
-        _set(data, "stt.mode", "local")
-        console.print("  [dim]Speech switched to local Whisper (strict privacy).[/dim]")
 
     # 5. Microphone
     if speech != "external" and mic_test is not None:
-        console.print("\n[bold]5. Microphone[/bold]")
-        if ask.confirm("  Test the microphone now (3 s)?", True):
-            mic_test(console, data)
+        _step(console, 5, "Microphone", "say a few words")
+        mic_test(console, data)
 
     write_config(cfg_path, data)
-    console.print(
-        f"\n[green]✓[/green] Saved {cfg_path}" + (f" and {env_path}" if have_keys else "")
-    )
-
     final = load_config(None, global_dir=gdir)
-    chain = [
-        p.name for p in final.chain_providers() if p.resolve_key() is not None
-    ]  # fmt: skip
-    console.print("[green]✓[/green] AI chain: " + (" → ".join(chain) or "none"))
-    if not have_keys and not any(p == "local" for p in chain):
-        console.print("[yellow]![/yellow] No AI provider yet: add a key or install Ollama.")
+    chain = [p.name for p in final.chain_providers() if p.resolve_key() is not None]
+    console.print()
+    console.print(f"[green]✓[/green] saved [dim]{cfg_path}[/dim]")
+    console.print(f"  [dim]AI[/dim]       {' → '.join(chain) or 'none'}")
+    console.print(f"  [dim]privacy[/dim]  {data['privacy']}")
+    if not chain:
+        console.print(
+            "[yellow]![/yellow] No AI yet: add a key (voxtex init) or install Ollama. Until"
+            " then, what you say goes in exactly as heard."
+        )
     command = "voxtex watch" if speech == "external" else "voxtex"
     console.print(
-        f"\nNext: in your thesis folder, put a line [bold]%> HERE[/bold] where text should go,"
-        f" then run [bold]{command}[/bold]. [dim]voxtex doctor checks everything.[/dim]"
+        f"\nNext: [bold]cd[/bold] into your thesis folder and run [bold]{command}[/bold]."
+        " [dim]voxtex doctor checks everything.[/dim]"
     )
     return 0
+
+
+def _found(console: Console, what: str, ok: bool, yes: str, no: str) -> None:
+    mark = "[green]✓[/green]" if ok else "[dim]·[/dim]"
+    console.print(f"  {mark} {what:<8} [dim]{escape(yes if ok else no)}[/dim]")
+
+
+def _step(console: Console, n: int, title: str, note: str = "") -> None:
+    console.print(f"\n[bold]{n}  {title}[/bold]" + (f" [dim]· {note}[/dim]" if note else ""))
+
+
+def _key_name(env: str) -> str:
+    return next((name for e, name, _ in CLOUD_KEYS if e == env), env)
+
+
+def _ask_key(console, ask, env, name, why, provider, lister, env_path, have_keys) -> None:
+    if env in have_keys:
+        if ask.confirm(f"  {name}: a key is already set. Keep it?", True):
+            return
+        have_keys.remove(env)
+    console.print(f"  {name} ({why}): get a key at {KEY_URLS.get(env, '')}")
+    for _attempt in range(2):
+        key = ask.secret(f"  Paste your {env} (Enter to skip)")
+        if not key:
+            return
+        result = check_provider(provider.model_copy(update={"api_key": key}), lister)
+        _print_result(console, result)
+        if result.status in ("ok", "warn"):  # warn: e.g. offline now; the key may be fine
+            save_env_value(env_path, env, key)
+            os.environ[env] = key  # so the steps below and the summary see it
+            have_keys.append(env)
+            return
 
 
 def _print_result(console: Console, c: Check) -> None:
@@ -237,7 +253,7 @@ def _setup_local(console: Console, ask: Prompts, local, data: dict, lister) -> N
     import openai
 
     if not shutil.which("ollama"):
-        console.print("  Ollama isn't installed. Optional; to add it later:")
+        console.print("  [yellow]![/yellow] Strict privacy needs a local AI. Install Ollama:")
         console.print(f"    {OLLAMA_INSTALL}")
         console.print(f"    ollama pull {local.model}")
         return

@@ -79,12 +79,10 @@ def test_save_env_value_replaces_and_is_private(tmp_path):
 
 def test_wizard_tests_and_saves_keys(gdir):
     ask = Scripted([
-        None,  # speech: default (local, GPU)
-        "bad", "gsk_good",  # Groq: rejected, then accepted
-        "",  # Gemini: skip
-        "",  # OpenRouter: skip
-        "mistral:latest",  # local model: one that's pulled
         None,  # privacy: normal
+        "bad", "gsk_good",  # Groq: rejected, then accepted
+        None,  # no fallback keys
+        "mistral:latest",  # local model: one that's pulled
     ])  # fmt: skip
     models = {
         GROQ: ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"],
@@ -94,38 +92,51 @@ def test_wizard_tests_and_saves_keys(gdir):
     assert run_init(out, ask, lister(models), gdir) == 0
     assert parse_env_file(gdir / ".env") == {"GROQ_API_KEY": "gsk_good"}
     data = tomllib.loads((gdir / "config.toml").read_text(encoding="utf-8"))
-    assert data["stt"]["mode"] == "local"
+    assert data["stt"]["mode"] == "local"  # a GPU: speech is never asked about
     assert data["privacy"] == "normal"
     assert data["providers"]["local"]["model"] == "mistral:latest"
     text = out.export_text()
-    assert "AI chain: groq-gptoss → groq-qwen → local" in text
+    assert "groq-gptoss → groq-qwen → local" in text
     assert "rejected" in text
+    assert not ask.answers
 
 
 def test_wizard_keeps_an_existing_key(gdir, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "already")
-    ask = Scripted([None, True, "", "", "", None])
+    ask = Scripted([None, True, None])
     models = {OLLAMA: ["qwen2.5-coder:14b"]}
     assert run_init(Console(width=200), ask, lister(models), gdir) == 0
     assert not (gdir / ".env").exists()
     assert any("already set" in q for q in ask.asked)
 
 
-def test_strict_privacy_with_cloud_speech_switches_to_local(gdir):
-    ask = Scripted(["groq", "", "", "", "", "strict"])
+def test_strict_privacy_asks_for_no_keys(gdir):
+    ask = Scripted([True, ""])  # strict; pull the local model later
     run_init(Console(width=200), ask, lister({OLLAMA: []}), gdir)
     data = tomllib.loads((gdir / "config.toml").read_text(encoding="utf-8"))
     assert data["stt"]["mode"] == "local"
     assert load_config(None, global_dir=gdir).privacy == "strict"
+    assert not any("Paste" in q for q in ask.asked)
+
+
+def test_without_a_gpu_speech_can_go_to_groq(gdir, monkeypatch):
+    monkeypatch.setattr("voxtex.audio.stt.cuda_available", lambda: False)
+    monkeypatch.setenv("GROQ_API_KEY", "already")
+    ask = Scripted([None, True, None, True, ""])  # normal, keep key, no more, Groq speech
+    run_init(Console(width=200), ask, lister({}), gdir)
+    data = tomllib.loads((gdir / "config.toml").read_text(encoding="utf-8"))
+    assert data["stt"]["mode"] == "groq"
 
 
 def test_rerun_keeps_other_settings(gdir):
     gdir.mkdir(parents=True)
-    (gdir / "config.toml").write_text("[listen]\ndecision_pause = 3.0\n", encoding="utf-8")
-    run_init(Console(width=200), Scripted(["external", "", "", "", "", None]), lister({}), gdir)
+    (gdir / "config.toml").write_text(
+        '[listen]\ndecision_pause = 3.0\n[stt]\nmode = "external"\n', encoding="utf-8"
+    )
+    run_init(Console(width=200), Scripted([None, "", None, ""]), lister({}), gdir)
     data = tomllib.loads((gdir / "config.toml").read_text(encoding="utf-8"))
     assert data["listen"]["decision_pause"] == 3.0
-    assert data["stt"]["mode"] == "external"
+    assert data["stt"]["mode"] == "external"  # watch mode is kept
 
 
 def test_first_run_needed(gdir):

@@ -17,20 +17,20 @@ from rich.console import Console
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
-from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Center
+from textual.containers import Center, Horizontal
 from textual.css.query import NoMatches
-from textual.screen import ModalScreen
-from textual.widgets import OptionList, Static, TextArea
+from textual.widgets import Static, TextArea
 from textual.widgets.text_area import TextAreaTheme
 
+from voxtex import config as voxtex_config
 from voxtex.app import build_chain, open_project
 from voxtex.audio.turns import is_garbled, spoken_undo
 from voxtex.config import Config
-from voxtex.editor import pill
+from voxtex.editor import palette, pill, usage
 from voxtex.editor.highlight import char_to_byte, latex_spans
+from voxtex.editor.menus import FilePicker, ThemePicker, hints
 from voxtex.editor.place import Location, advance, place_block
 from voxtex.engine.buffer import Buffer
 from voxtex.engine.decide import Ignore, Insert, Replace, UncertainInsert
@@ -38,7 +38,7 @@ from voxtex.engine.engine import Engine, Step
 from voxtex.io.writer import Writer, read_file, write_atomic
 from voxtex.project.index import STATE_DIR, ProjectIndex
 from voxtex.providers import Chain
-from voxtex.ui import ACCENT, session_summary
+from voxtex.ui import session_summary
 
 MIN_RECORDING_S = 0.4
 MAX_RECORDING_S = 300.0
@@ -46,30 +46,32 @@ SILENT_PEAK = 0.01  # a recording never louder than this heard nothing
 FRESH_SECONDS = 4.0  # how long newly written text stays tinted
 CHECK_SECONDS = 20.0  # text voxtex is unsure about stays tinted longer
 BOM = "﻿"
-TEXT_COLOR = "#d4d4d4"
-FAINT = "#5a5a5a"
+USAGE_AUTO_WIDTH = 130  # the usage panel opens by itself on terminals this wide
 
-THEME = TextAreaTheme(
-    name="voxtex",
-    base_style=Style(color=TEXT_COLOR),
-    gutter_style=Style(color="#3c3c3c"),
-    cursor_line_gutter_style=Style(color="#8a8a8a"),
-    cursor_line_style=Style(bgcolor="#1a1a1a"),
-    cursor_style=Style(color="#111111", bgcolor="#e6e6e6"),
-    selection_style=Style(bgcolor="#4a3328"),
-    bracket_matching_style=Style(bold=True),
-    syntax_styles={
-        "latex.comment": Style(color="#6a737d", italic=True),
-        "latex.command": Style(color="#569cd6"),
-        "latex.structure": Style(color="#c586c0", bold=True),
-        "latex.ref": Style(color="#4ec9b0"),
-        "latex.math": Style(color="#dcdcaa"),
-        "latex.brace": Style(color="#808080"),
-        "voxtex.check": Style(color="#e5c07b", bgcolor="#3a3220"),
-        "voxtex.new": Style(bgcolor="#1d3b26"),
-        "voxtex.unsure": Style(bgcolor="#3a3220"),
-    },
-)
+
+def text_area_theme(pal: palette.Palette) -> TextAreaTheme:
+    """LaTeX colouring for the text area, from the palette."""
+    return TextAreaTheme(
+        name="voxtex",
+        base_style=Style(color=pal.text),
+        gutter_style=Style(color=pal.surface1),
+        cursor_line_gutter_style=Style(color=pal.overlay1),
+        cursor_line_style=Style(bgcolor=pal.surface0),
+        cursor_style=Style(color="black", bgcolor=pal.text),
+        selection_style=Style(bgcolor=pal.surface1),
+        bracket_matching_style=Style(bold=True),
+        syntax_styles={
+            "latex.comment": Style(color=pal.overlay0, italic=True),
+            "latex.command": Style(color=pal.command),
+            "latex.structure": Style(color=pal.mauve, bold=True),
+            "latex.ref": Style(color=pal.teal),
+            "latex.math": Style(color=pal.yellow),
+            "latex.brace": Style(color=pal.overlay1),
+            "voxtex.check": Style(color=pal.yellow, bgcolor="#3a3220"),
+            "voxtex.new": Style(bgcolor="#1d3b26"),
+            "voxtex.unsure": Style(bgcolor="#3a3220"),
+        },
+    )
 
 
 class LatexArea(TextArea):
@@ -113,58 +115,50 @@ class LatexArea(TextArea):
                     highlights[row].append((b[s], b[e], name))
 
 
-class FilePicker(ModalScreen[str | None]):
-    DEFAULT_CSS = """
-    FilePicker { align: center middle; background: black 40%; }
-    FilePicker > OptionList {
-        width: 64; max-height: 60%; padding: 1 2; border: round #3a3a3a;
-        background: #141414;
-    }
-    FilePicker > OptionList > .option-list--option-highlighted { background: #2a2a2a; }
-    """
-    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
-
-    def __init__(self, files: list[str]):
-        super().__init__()
-        self.files = files
-
-    def compose(self) -> ComposeResult:
-        yield OptionList(*self.files)
-
-    @on(OptionList.OptionSelected)
-    def chosen(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(self.files[event.option_index])
-
-
 class EditorApp(App):
     TITLE = "voxtex"
     ENABLE_COMMAND_PALETTE = False
     # Every row has a fixed height: what changes is the content, never the layout.
     CSS = """
     Screen { layout: vertical; background: ansi_default; }
-    #top { height: 1; margin: 0 2; }
-    #page { height: 1fr; margin-top: 1; }
+    #top {
+        height: 2; padding: 0 1; background: ansi_default;
+        border-bottom: solid $vx-surface0;
+    }
+    #body { width: 100%; height: 1fr; }
+    #page { width: 1fr; height: 1fr; margin-top: 1; }
+    #usage {
+        width: 36; height: 1fr; padding: 1 2; background: ansi_default;
+        border-left: solid $vx-surface0;
+    }
     LatexArea {
         width: 100%; max-width: 104; height: 1fr; border: none; padding: 0;
         background: ansi_default;
-        scrollbar-size-vertical: 1; scrollbar-color: #2e2e2e; scrollbar-color-hover: #4a4a4a;
+        scrollbar-size-vertical: 1; scrollbar-color: $vx-surface0;
+        scrollbar-color-hover: $vx-surface1;
         scrollbar-background: ansi_default; scrollbar-background-hover: ansi_default;
     }
     LatexArea:focus { border: none; }
     #heard { height: 1; margin: 1 4 0 4; text-align: center; }
     #dock { height: 3; }
-    #pill { width: auto; height: 3; padding: 0 2; border: round #3a3a3a; }
-    ToastRack { dock: top; align: right top; margin-top: 2; }
-    Toast { width: 52; max-width: 60%; background: #1a1a1a; padding: 0 1; border-left: none; }
-    Toast.-information { border-left: outer #4a4a4a; }
-    Toast.-warning { border-left: outer #c9a050; }
-    Toast.-error { border-left: outer #c25a5a; }
+    #pill { width: auto; height: 3; padding: 0 2; border: round $vx-surface1; }
+    ToastRack { dock: top; align: right top; margin-top: 3; }
+    Toast {
+        width: 52; max-width: 60%; background: ansi_default; color: $vx-text; padding: 0 1;
+        border: round $vx-surface1;
+    }
+    Toast.-information { border-left: outer $vx-accent; }
+    Toast.-warning { border-left: outer $vx-yellow; }
+    Toast.-error { border-left: outer $vx-red; }
     """
     BINDINGS = [
         Binding("ctrl+space,ctrl+@,ctrl+r", "talk", "Talk", priority=True),
         Binding("escape", "cancel", "Cancel recording", priority=True),
         Binding("ctrl+s", "save", "Save"),
-        Binding("ctrl+o", "open_file", "Open chapter"),
+        Binding("ctrl+o", "open_file", "Open a file"),
+        Binding("ctrl+t", "toggle_unfiltered", "Unfiltered / AI formatting"),
+        Binding("ctrl+p", "pick_theme", "Theme"),
+        Binding("ctrl+g", "toggle_usage", "Usage panel"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
@@ -180,6 +174,13 @@ class EditorApp(App):
         audio: bool = True,
     ):
         super().__init__(ansi_color=True)
+        for theme, _ in palette.THEMES.values():
+            self.register_theme(theme)
+        self.theme_name = _load_settings().get("theme", palette.DEFAULT)
+        if self.theme_name not in palette.THEMES:
+            self.theme_name = palette.DEFAULT
+        self.pal = palette.palette(self.theme_name)
+        self.theme = self.theme_name
         self.idx, self.config, self.chain = idx, config, chain
         self.root = idx.root_path
         self.path = path
@@ -201,15 +202,21 @@ class EditorApp(App):
         self.microphone = self.transcriber = self.fallback = None
         self.prompt = ""
         self.said = ""
+        state = _load_state(self.root)
+        self.unfiltered = bool(state.get("unfiltered", False))  # words as heard, no AI
+        self.show_usage: bool | None = state.get("usage")  # None: open it if there's room
+        self.usage = usage.Usage()
 
     # --- layout ----------------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield Static(id="top")
-        with Center(id="page"):
-            yield LatexArea(
-                id="editor", soft_wrap=True, show_line_numbers=True, tab_behavior="indent"
-            )
+        with Horizontal(id="body"):
+            with Center(id="page"):
+                yield LatexArea(
+                    id="editor", soft_wrap=True, show_line_numbers=True, tab_behavior="indent"
+                )
+            yield Static(id="usage")
         yield Static(id="heard")
         with Center(id="dock"):
             yield Static(id="pill")
@@ -219,9 +226,14 @@ class EditorApp(App):
         return self.query_one(LatexArea)
 
     def on_mount(self) -> None:
-        self.area.register_theme(THEME)
+        self.area.register_theme(text_area_theme(self.pal))
         self.area.theme = "voxtex"
         self.load(self.path)
+        if self.show_usage is None:
+            self.show_usage = self.size.width >= USAGE_AUTO_WIDTH
+        if any(_on_this_machine(p) for p in self.chain.usable()):
+            self.usage.gpu_used = True  # the local model (Ollama) may run on the GPU
+            self.usage.start_gpu()  # shows nothing without an NVIDIA GPU
         self.set_interval(0.1, self.refresh_chrome)
         self.set_interval(1 / 20, self.animate)
         self.set_interval(1.0, self.tick)
@@ -270,11 +282,48 @@ class EditorApp(App):
                 self.save()
                 self.load(self.root / rel)
 
-        self.push_screen(FilePicker(self.idx.body_files), chosen)
+        self.push_screen(FilePicker(self.root, self.idx.body_files, self.rel), chosen)
+
+    def action_toggle_unfiltered(self) -> None:
+        self.unfiltered = not self.unfiltered
+        _remember(self.root, unfiltered=self.unfiltered)
+        if self.unfiltered:
+            self.note("Unfiltered: what you say goes in exactly as heard, no AI.")
+        else:
+            self.note("AI formatting: your words, with punctuation, citations and LaTeX.")
+
+    def action_pick_theme(self) -> None:
+        def chosen(name: str | None) -> None:
+            if name:
+                self.apply_theme(name)
+                _save_settings(_load_settings() | {"theme": name})
+
+        self.push_screen(ThemePicker(self.theme_name), chosen)
+
+    def apply_theme(self, name: str) -> None:
+        """Switch every colour on screen: CSS through the theme, Rich text through the
+        palette, and the LaTeX colouring."""
+        self.theme_name, self.pal = name, palette.palette(name)
+        self.theme = name
+        self.area.register_theme(text_area_theme(self.pal))
+        self.area.theme = "voxtex"
+        self.area._build_highlight_map()
+        self.area.refresh()
+
+    def action_toggle_usage(self) -> None:
+        self.show_usage = not self.show_usage
+        _remember(self.root, usage=self.show_usage)
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # Esc only cancels a recording; otherwise it reaches menus and the editor.
+        if action == "cancel":
+            return self.phase == "recording"
+        return True
 
     async def action_quit(self) -> None:
         self.save()
         self.stop_audio()
+        self.usage.stop()
         self.exit()
 
     def tick(self) -> None:
@@ -314,6 +363,9 @@ class EditorApp(App):
             self.fallback = build_transcriber(SttChoice("local", "small", "cpu"), cfg)
         else:
             transcriber.load()
+            if choice.device == "cuda":
+                self.usage.gpu_used = True
+                self.usage.start_gpu()
         self.transcriber, self.prompt = transcriber, whisper_prompt(self.idx)
         try:
             # Press-to-talk: nothing needs cutting into utterances.
@@ -393,10 +445,14 @@ class EditorApp(App):
                 self.call_from_thread(self.finish, None, "", unheard)
                 return
             undos = spoken_undo(said)
-            if undos and not self.selection_range:
+            if undos:
                 self.call_from_thread(self.voice_undo, undos)
                 return
             self.said, self.phase = said, "writing"
+            if self.unfiltered:
+                step = self.engine.verbatim(said, selected if self.selection_range else "")
+                self.call_from_thread(self.finish, step, None)
+                return
             try:
                 if self.selection_range:
                     step = self.engine.command(said, selected, before)
@@ -432,6 +488,7 @@ class EditorApp(App):
             self.call_from_thread(self.note, f"Switched to {self.fallback.name} ({e})")
             self.transcriber, self.fallback = self.fallback, None
             t = self.transcriber.transcribe(audio, self.prompt)
+        self.usage.speech.append(t.seconds)
         _log(self.root, {
             "ts": round(time.time(), 3), "kind": "stt", "backend": t.backend,
             "language": t.language, "audio_s": round(t.audio_seconds, 2),
@@ -454,6 +511,9 @@ class EditorApp(App):
     def apply_step(self, step: Step) -> None:
         """Put the result into the editor text (and save)."""
         d, b, area = step.decision, step.block, self.area
+        if step.provider:
+            self.usage.tokens_in.append(step.input_tokens)
+            self.usage.latency.append(step.latency_s)
         for n in step.notices:
             self.note(n)
         if isinstance(d, Ignore) or b is None:
@@ -522,41 +582,63 @@ class EditorApp(App):
             widget = self.query_one("#pill", Static)
         except NoMatches:  # closing down
             return
-        widget.styles.border = ("round", pill.BORDER[state])
-        widget.update(pill.pill_content(state, self.levels, time.monotonic()))
+        widget.styles.border = ("round", pill.border(state, self.pal))
+        widget.update(pill.pill_content(state, self.levels, time.monotonic(), self.pal))
 
     def refresh_chrome(self) -> None:
-        width = self.size.width - 4
+        try:
+            top, heard, panel = (self.query_one(f"#{n}", Static) for n in ("top", "heard", "usage"))
+        except NoMatches:  # closing down
+            return
+        top.update(self.top_bar())
+        panel.display = bool(self.show_usage)
+        if self.show_usage:
+            panel.update(usage.render(self.usage, self.chain, panel.size.width or 32, self.pal))
+        heard.update(self.heard_line(self.size.width - 8))
+
+    def top_bar(self) -> Table:
+        """`voxtex  folder › chapter.tex ●` on the left; the writing mode and the AI on
+        the right."""
+        pal = self.pal
         folder, _, name = self.rel.rpartition("/")
         dirty = self.area.text != self.saved_text
-        top = Table.grid(expand=True)
-        top.add_column(no_wrap=True)
-        top.add_column(justify="right", no_wrap=True)
-        keys = Text("^space talk  ^o chapters  ^z undo  ^q quit", style=FAINT)
-        top.add_row(
-            Text.assemble(
-                ("✻ ", ACCENT), (folder + "/" if folder else "", FAINT), (name, TEXT_COLOR),
-                (" •" if dirty else "  ", ACCENT),
-            ),
-            keys if width > 70 else "",
+        path: list[tuple[str, str]] = []
+        for part in folder.split("/") if folder else []:
+            path += [(part, pal.overlay1), (" › ", pal.surface1)]
+        left = Text.assemble(
+            ("voxtex", f"bold {pal.accent}"), ("   ", ""), *path, (name, f"bold {pal.text}"),
+            (" ●" if dirty else "", pal.yellow),
         )  # fmt: skip
-        self.query_one("#top", Static).update(top)
+        if self.unfiltered:
+            right = Text.assemble((" unfiltered ", f"bold {pal.contrast} on {pal.peach}"))
+        else:
+            right = Text.assemble((" ai format ", f"{pal.text} on {pal.surface0}"))
+            if self.chain.active:
+                right.append(f"  {self.chain.active}", style=pal.overlay0)
+        bar = Table.grid(expand=True)
+        bar.add_column(no_wrap=True, overflow="ellipsis")
+        bar.add_column(justify="right", no_wrap=True)
+        bar.add_row(left, right)
+        return bar
 
+    def heard_line(self, width: int) -> Text:
+        pal = self.pal
         if self.phase == "recording":
             secs = int(time.monotonic() - self.recording_since)
-            line = Text.assemble(
-                ("● ", "#e06c6c"), (f"{secs // 60}:{secs % 60:02d}", TEXT_COLOR),
-                ("   ctrl+space to finish · esc to cancel", FAINT),
+            return Text.assemble(
+                ("● ", pal.red), (f"{secs // 60}:{secs % 60:02d}", pal.text),
+                ("   ", ""), hints(("^space", "finish"), ("esc", "cancel"), pal=pal),
             )  # fmt: skip
-        elif self.said:
-            line = Text(_tail(self.said, width - 8), style="#9a9a9a italic")
-        elif self.phase == "ready" and self.area.selected_text.strip():
-            line = Text("ctrl+space and say what to change in the selection", style=FAINT)
-        elif self.phase == "ready":
-            line = Text("ctrl+space to talk", style="#3f3f3f")
-        else:
-            line = Text("")
-        self.query_one("#heard", Static).update(line)
+        if self.said:
+            return Text(_tail(self.said, width), style=f"{pal.subtext} italic")
+        if self.phase == "ready" and self.area.selected_text.strip():
+            what = "replace the selection" if self.unfiltered else "say what to change"
+            return hints(("^space", what), pal=pal)
+        if self.phase == "ready":
+            mode = "ai format" if self.unfiltered else "unfiltered"
+            return hints(("^space", "talk"), ("^o", "files"), ("^t", mode), ("^g", "usage"),
+                         ("^p", "theme"), ("^q", "quit"), pal=pal)  # fmt: skip
+        return Text("")
 
 
 def recorded_audio(frames: list[np.ndarray]) -> np.ndarray:
@@ -599,6 +681,39 @@ def _remember_row(root: Path, rel: str, row: int) -> None:
     state = _load_state(root)
     state.setdefault("rows", {})[rel] = row
     state["last_file"] = rel
+    _save_state(root, state)
+
+
+def _remember(root: Path, **settings) -> None:
+    """Editor settings (raw words, the usage panel) kept per thesis."""
+    _save_state(root, _load_state(root) | settings)
+
+
+def _on_this_machine(provider) -> bool:
+    return any(h in provider.base_url for h in ("localhost", "127.0.0.1"))
+
+
+def _settings_path() -> Path:
+    return voxtex_config.GLOBAL_CONFIG / "editor.json"
+
+
+def _load_settings() -> dict:
+    """Editor settings for every thesis (the theme)."""
+    try:
+        return json.loads(_settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_settings(settings: dict) -> None:
+    try:
+        _settings_path().parent.mkdir(parents=True, exist_ok=True)
+        _settings_path().write_text(json.dumps(settings, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _save_state(root: Path, state: dict) -> None:
     try:
         _state_path(root).parent.mkdir(parents=True, exist_ok=True)
         _state_path(root).write_text(json.dumps(state, indent=1), encoding="utf-8")

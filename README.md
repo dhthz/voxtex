@@ -7,8 +7,9 @@
 
 <p align="center">
   <a href="pyproject.toml"><img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-blue.svg"></a>
-  <img alt="Status: pre-release" src="https://img.shields.io/badge/status-pre--release-orange.svg">
-  <a href="pyproject.toml"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="https://pypi.org/project/voxtex/"><img alt="PyPI" src="https://img.shields.io/pypi/v/voxtex.svg"></a>
+  <a href="https://github.com/dhthz/voxtex/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dhthz/voxtex/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
 **Voxtex: talk to your thesis, get LaTeX that compiles.**
@@ -28,12 +29,10 @@ ever dropped. Every write is checked first.
 
 ## Install
 
-voxtex is not on PyPI yet. Install it from source with [uv](https://docs.astral.sh/uv/):
+With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-git clone https://github.com/dhthz/voxtex.git
-cd voxtex
-uv tool install ".[gpu]"     # NVIDIA GPU; on other machines: uv tool install .
+uv tool install "voxtex[gpu]"     # NVIDIA GPU; on other machines: uv tool install voxtex
 ```
 
 On Linux and WSL, the microphone needs three system packages:
@@ -55,17 +54,18 @@ compiles anything unusual it writes inside your real preamble before writing it.
 ## First run
 
 ```bash
-voxtex init                              # speech, free AI keys (tested on the spot), privacy, mic
-voxtex doctor                            # check providers, models, speech speed, mic and TeX
+cd my-thesis                             # the folder with your main .tex file
+voxtex                                   # first time: a one-minute setup, then the editor
 ```
 
-`voxtex init` also runs by itself the first time you use voxtex. Then, from the
-thesis folder:
+Setup looks at your machine first (GPU, Ollama, keys you already have) and only asks
+what it can't decide: whether everything should stay on this machine, and a free
+[Groq key](https://console.groq.com/keys), tested on the spot. Run `voxtex init` to
+change it later and `voxtex doctor` to check everything.
 
 ```bash
-voxtex index                             # show what voxtex learned about the thesis
-voxtex                                   # open your last chapter in the editor and talk
 voxtex edit chapters/results.tex         # open a specific chapter
+voxtex index                             # show what voxtex learned about the thesis
 ```
 
 In the editor, `ctrl+space` starts and stops recording (`esc` cancels); the text goes
@@ -73,7 +73,13 @@ at the cursor, or replaces the selection if you selected something. Say punctuat
 ("κόμμα", "full stop") and it becomes the mark; say "undo" ("αναίρεση", "undo twice") to
 take back the last edit. If Whisper only heard noise, or wasn't sure of the language and
 another one fits better, nothing odd is written: a message shows what it heard so you
-can say it again. `ctrl+z` undoes, `ctrl+o` opens another chapter, `ctrl+q` quits. voxtex saves after every voice edit (with a backup in
+can say it again. `ctrl+t` switches to unfiltered: what you say goes in exactly as
+heard, with no AI (press it again for AI formatting). `ctrl+p` picks a theme (charcoal by default, voxtex,
+catppuccin, nord, gruvbox, dracula, tokyo-night, solarized, rose-pine, ...); the
+background always stays your terminal's. `ctrl+g` shows or hides small
+graphs of what's in use (AI calls and tokens, speech time, and the GPU when speech
+or the local model runs on it). `ctrl+z` undoes, `ctrl+o` opens any `.tex` file in the
+thesis folder (type to filter, `esc` to go back), `ctrl+q` quits. voxtex saves after every voice edit (with a backup in
 `.voxtex/backups/` before the first save), so your PDF viewer and other editors see
 the changes right away.
 
@@ -153,19 +159,18 @@ compile = "auto"                     # auto | always | off
 
 ## Project status
 
-voxtex has not had a release, and anything can still change. It follows the
-build plan in [docs/voxtext_plan.md](docs/voxtext_plan.md) and
-[docs/PLAN-ADDENDUM.md](docs/PLAN-ADDENDUM.md). Milestones M0–M5 are done: the
-project indexer, the engine and provider chain, validation, writing and undo,
-watch mode, listening, `voxtex init` and `voxtex doctor`, and the editor. Next is a
-PyPI release.
+voxtex is in beta (0.1). It's built and tested on a Greek thesis on WSL2 with an NVIDIA
+GPU; other setups are less tested, so issues are welcome. The original build plan is
+in [docs/voxtext_plan.md](docs/voxtext_plan.md) and
+[docs/PLAN-ADDENDUM.md](docs/PLAN-ADDENDUM.md).
 
 To work on it:
 
 ```bash
+git clone https://github.com/dhthz/voxtex.git && cd voxtex
 uv sync --extra gpu
 uv run pytest            # tests run without a microphone, a GPU or an API key
 uv run ruff check .
 ```
 
-License: MIT.
+License: [MIT](LICENSE).

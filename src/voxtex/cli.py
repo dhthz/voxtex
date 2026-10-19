@@ -41,6 +41,7 @@ def root(
         _first_run()
         if load_config(Path.cwd()).stt_mode == "external":  # dictating with another app
             watch(Path("."), False, None, None, False)
+            return
         edit(Path("."), None, False, None, None, None, False)
 
 

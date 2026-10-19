@@ -176,7 +176,8 @@ def _latin_wrapper(pre: Preamble, body: list[SourceFile]) -> str:
     candidates = [m for m in pre.macros if m.arity == 1 and _LATIN_SWITCH.search(m.body)]
     if candidates:
         uses = _count_cmds(body, tuple(re.escape(m.name[1:]) for m in candidates))
-        best = max(candidates, key=lambda m: uses.get(m.name[1:], 0))
+        # Most used; on a tie, the one that switches to English (hyphenation, spacing).
+        best = max(candidates, key=lambda m: (uses.get(m.name[1:], 0), "english" in m.body))
         return best.name
     return "\\textlatin" if pre.has("babel") else ""
 

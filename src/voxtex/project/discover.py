@@ -83,7 +83,10 @@ def find_main(path: Path) -> Path:
             break
         found = _best_main(parent, sorted(parent.glob("*.tex")))
     if found is None:
-        raise DiscoveryError(f"No main .tex file (with \\documentclass) found in or above {path}")
+        raise DiscoveryError(
+            f"No LaTeX thesis here: no .tex file with \\documentclass in or above {path}.\n"
+            "  Run voxtex inside your thesis folder, or: voxtex edit path/to/thesis"
+        )
     return found
 
 
