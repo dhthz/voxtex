@@ -1,6 +1,5 @@
 name: release
 
-# Push a tag like v0.1.0 to publish that version to PyPI (trusted publishing: no token).
 on:
   push:
     tags: ["v*"]
@@ -10,7 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write
       contents: write
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +21,8 @@ jobs:
       - run: uv sync && uv run pytest -q
       - run: uv build
       - run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       - name: GitHub release
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
         env:
