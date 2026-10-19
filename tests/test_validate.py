@@ -247,3 +247,17 @@ def test_wrap_latin_merges_runs_across_commas_and_numbers():
         "\\en{In our experiments, Sesame answered in 85 milliseconds}."
     )
     assert wrap_latin("Το RDF/XML και 85 ms", "\\en") == "Το \\en{RDF}/\\en{XML} και 85 \\en{ms}"
+
+
+@pytest.mark.skipif(not shutil.which("pdflatex"), reason="needs pdflatex")
+def test_compile_check_cannot_write_into_the_thesis(sample_thesis):
+    from voxtex.project.index import load_index
+    from voxtex.validate.compile import Compiler
+
+    idx, _ = load_index(sample_thesis)
+    evil = (
+        r"\immediate\write18{touch pwned_shell}"
+        r"\immediate\openout9=pwned_file.tex \immediate\write9{x}\immediate\closeout9 ok"
+    )
+    Compiler(idx, "pdflatex").check(evil)
+    assert not list(sample_thesis.rglob("pwned*"))

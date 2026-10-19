@@ -6,6 +6,7 @@ bibliography run); missing image files are warnings, since figures are often dic
 before the image exists.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -58,8 +59,12 @@ class Compiler:
         with tempfile.TemporaryDirectory(prefix="voxtex-") as tmp:
             tex = Path(tmp) / f"{JOB}.tex"
             tex.write_text(self.document(latex), encoding="utf-8")
+            # AI-written LaTeX is untrusted: no shell commands at all, and it runs in a
+            # temporary folder (TeX may only write where it runs) that still finds the
+            # thesis's own files through TEXINPUTS.
             cmd = [
                 self.engine,
+                "-no-shell-escape",
                 "-interaction=nonstopmode",
                 "-draftmode" if self.engine == "pdflatex" else "-no-pdf",
                 f"-output-directory={tmp}",
@@ -67,8 +72,9 @@ class Compiler:
                 str(tex),
             ]
             try:
+                env = os.environ | {"TEXINPUTS": f"{self.root}{os.pathsep}", "openout_any": "p"}
                 subprocess.run(
-                    cmd, cwd=self.root, capture_output=True, timeout=TIMEOUT_S, check=False
+                    cmd, cwd=tmp, env=env, capture_output=True, timeout=TIMEOUT_S, check=False
                 )
             except subprocess.TimeoutExpired:
                 self.last_seconds = time.monotonic() - start
