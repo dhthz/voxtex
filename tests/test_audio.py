@@ -377,3 +377,41 @@ def test_an_unsure_transcript_is_tried_in_the_other_language(monkeypatch):
     assert (t.text, t.language, w.last_language) == ("Βρες το.", "el", "el")
     heard["en"] = ("Undo twice.", -0.2, "en")  # sure enough: no second pass
     assert w.transcribe(np.zeros(16000, dtype=np.float32)).text == "Undo twice."
+
+
+def test_model_download_reports_progress(monkeypatch):
+    import huggingface_hub
+    from faster_whisper import utils
+
+    def not_cached(model, local_files_only=False):
+        raise OSError("not cached")
+
+    def download(repo, allow_patterns, tqdm_class):  # what huggingface_hub does
+        bar = tqdm_class(total=0, unit="B")
+        bar.total = 1_600_000_000
+        for _ in range(4):
+            bar.update(400_000_000)
+
+    monkeypatch.setattr(utils, "download_model", not_cached)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", download)
+    seen = []
+    stt.fetch_model("large-v3-turbo", lambda done, total: seen.append((done, total)))
+    assert seen[-1] == (1600.0, 1600.0) and len(seen) == 4
+
+
+async def test_editor_shows_the_download(sample_thesis, tmp_path):
+    from voxtex.config import ProviderConfig, load_config
+    from voxtex.editor.app import EditorApp
+    from voxtex.project.index import load_index
+    from voxtex.providers import Chain
+
+    idx, _ = load_index(sample_thesis)
+    config = load_config(idx.root_path, global_dir=tmp_path / "noconfig")
+    local = ProviderConfig(name="local", base_url="http://localhost:11434/v1", model="m")
+    path = sample_thesis / "chapters" / "methodology.tex"
+    app = EditorApp(idx, config, Chain([local], send=lambda *a: None), path, audio=False)
+    async with app.run_test():
+        app.phase = "loading"
+        app.downloading(640, 1600)
+        line = app.heard_line(100).plain
+        assert "downloading the speech model" in line and "640 / 1,600 MB" in line

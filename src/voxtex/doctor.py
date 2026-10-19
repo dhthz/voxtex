@@ -30,7 +30,6 @@ KEY_URLS = {
     "OPENAI_API_KEY": "https://platform.openai.com/api-keys",
 }
 OLLAMA_INSTALL = "curl -fsSL https://ollama.com/install.sh | sh"
-WHISPER_SIZES_MB = {"small": 480, "medium": 1500, "large-v3-turbo": 1600, "large-v3": 3100}
 SMALLER_MODEL = {"large-v3": "large-v3-turbo", "large-v3-turbo": "medium", "medium": "small"}
 
 ICONS = {"ok": "[green]✓[/green]", "warn": "[yellow]![/yellow]", "fail": "[red]✗[/red]",
@@ -188,7 +187,7 @@ def record_clip(config: Config, console: Console, seconds: float = SPEED_CLIP_S)
 def check_speech(
     config: Config, console: Console, audio: np.ndarray | None, quick: bool, languages=()
 ) -> list[Check]:
-    from voxtex.audio.stt import build_transcriber, choose_stt, cuda_available
+    from voxtex.audio.stt import MODEL_MB, build_transcriber, choose_stt, cuda_available
 
     checks = []
     gpu = cuda_available()
@@ -203,10 +202,10 @@ def check_speech(
             )
         return checks
     if not whisper_cached(choice.model):
-        size = WHISPER_SIZES_MB.get(choice.model)
+        size = MODEL_MB.get(choice.model)
         checks.append(Check(
             "info", f"Whisper {choice.model}",
-            "not downloaded yet" + (f" (~{size} MB, once, on the first listen)" if size else ""),
+            "not downloaded yet" + (f" (~{size} MB, once, on first use)" if size else ""),
         ))  # fmt: skip
         return checks
     if quick:

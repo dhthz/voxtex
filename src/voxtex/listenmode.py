@@ -161,9 +161,12 @@ def run_listen(
 
     if choice.kind == "local":
         with console.status(
-            f"[grey50]Loading {choice.model} (downloads once on first use)…[/grey50]",
-            spinner="dots", spinner_style="#d77757",
-        ):  # fmt: skip
+            f"[grey50]Loading {choice.model}…[/grey50]", spinner="dots", spinner_style="#d77757"
+        ) as status:
+            transcriber.progress = lambda done, total: status.update(
+                f"[grey50]Downloading {choice.model} (first run only): "
+                f"{done:,.0f} / {total:,.0f} MB[/grey50]"
+            )
             transcriber.load()
     stt = SpeechToText(transcriber, whisper_prompt(idx), fallback, root)
     stt.start()

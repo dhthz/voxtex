@@ -31,7 +31,7 @@ def spark(values: list[float], width: int, top: float | None = None) -> str:
 def meter(fraction: float, width: int, pal: Palette = VOXTEX) -> Text:
     """A thin bar, herdr's `━━━───`."""
     filled = round(max(0.0, min(1.0, fraction)) * width)
-    return Text.assemble(("━" * filled, pal.accent), ("─" * (width - filled), pal.surface1))
+    return Text.assemble(("━" * filled, pal.command), ("─" * (width - filled), pal.surface1))
 
 
 def short(n: float) -> str:

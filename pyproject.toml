@@ -35,6 +35,7 @@ dependencies = [
     "watchdog>=6.0.0",
     "faster-whisper>=1.0",
     "textual>=1.0",
+    "tqdm>=4.60",
 ]
 
 [project.optional-dependencies]

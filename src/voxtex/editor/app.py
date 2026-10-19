@@ -202,6 +202,7 @@ class EditorApp(App):
         self.microphone = self.transcriber = self.fallback = None
         self.prompt = ""
         self.said = ""
+        self.download: tuple[float, float] | None = None  # speech model: MB done, MB in all
         state = _load_state(self.root)
         self.unfiltered = bool(state.get("unfiltered", False))  # words as heard, no AI
         self.show_usage: bool | None = state.get("usage")  # None: open it if there's room
@@ -362,7 +363,9 @@ class EditorApp(App):
         if choice.kind != "local":
             self.fallback = build_transcriber(SttChoice("local", "small", "cpu"), cfg)
         else:
+            transcriber.progress = self.downloading
             transcriber.load()
+            self.download = None
             if choice.device == "cuda":
                 self.usage.gpu_used = True
                 self.usage.start_gpu()
@@ -377,6 +380,10 @@ class EditorApp(App):
             return
         self.microphone = mic
         self.phase = "ready"
+
+    def downloading(self, done_mb: float, total_mb: float) -> None:
+        """Worker thread: the speech model is downloading (first run only)."""
+        self.download = (done_mb, total_mb)
 
     def stop_audio(self) -> None:
         if self.microphone is not None:
@@ -631,6 +638,15 @@ class EditorApp(App):
             )  # fmt: skip
         if self.said:
             return Text(_tail(self.said, width), style=f"{pal.subtext} italic")
+        if self.phase == "loading" and self.download:
+            done, total = self.download
+            return Text.assemble(
+                ("downloading the speech model (first run only)  ", pal.overlay1),
+                usage.meter(done / total if total else 0, 24, pal),
+                (f"  {done:,.0f} / {total:,.0f} MB", pal.text),
+            )  # fmt: skip
+        if self.phase == "loading":
+            return Text("loading speech recognition…", style=pal.overlay0)
         if self.phase == "ready" and self.area.selected_text.strip():
             what = "replace the selection" if self.unfiltered else "say what to change"
             return hints(("^space", what), pal=pal)

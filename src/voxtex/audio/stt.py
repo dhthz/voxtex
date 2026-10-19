@@ -16,10 +16,12 @@ import os
 import site
 import time
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+from tqdm import tqdm
 
 from voxtex.config import Config
 
@@ -36,6 +38,15 @@ SWITCH_MIN_SHARE = 0.75  # of the probability among the allowed languages
 # picked the wrong language): the other allowed languages get a try and the surest one wins.
 RECHECK_LOGPROB = -0.7
 NOTHING_HEARD = -10.0
+# Download sizes of the Whisper models, for setup, doctor and the first-run progress bar.
+MODEL_MB = {"small": 480, "medium": 1500, "large-v3-turbo": 1600, "large-v3": 3100}
+MODEL_FILES = [
+    "config.json",
+    "preprocessor_config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.*",
+]  # fmt: skip  (what faster-whisper downloads)
 
 
 @dataclass
@@ -158,6 +169,7 @@ class LocalWhisper:
         self.language = None if language == "auto" else language
         self.languages = languages
         self.last_language = languages[0] if languages else None
+        self.progress: Callable[[float, float], None] | None = None  # MB done, MB in all
         self._model = None
 
     def load(self) -> None:
@@ -165,6 +177,9 @@ class LocalWhisper:
             if self.device == "cuda":
                 _preload_cuda_libs()
             from faster_whisper import WhisperModel
+
+            if self.progress is not None:
+                fetch_model(self.model_name, self.progress)
 
             compute = "float16" if self.device == "cuda" else "int8"
             self._model = WhisperModel(self.model_name, device=self.device, compute_type=compute)
@@ -258,6 +273,50 @@ class LocalWhisper:
         tokens = sum(max(1, len(s.tokens)) for s in kept)
         confidence = sum(s.avg_logprob * max(1, len(s.tokens)) for s in kept) / tokens
         return "".join(s.text for s in kept).strip(), confidence, info.language
+
+
+class _ByteProgress(tqdm):
+    """Hands the downloader's byte counts to `report` instead of drawing a bar."""
+
+    report: Callable[[int, int], None] | None = None
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("name", None)
+        super().__init__(*args, **{**kwargs, "file": io.StringIO(), "disable": False})
+
+    def update(self, n=1):
+        result = super().update(n)
+        if self.unit == "B" and _ByteProgress.report is not None:
+            _ByteProgress.report(self.n, self.total or 0)
+        return result
+
+
+def fetch_model(model: str, progress: Callable[[float, float], None]) -> None:
+    """Download a Whisper model if it isn't cached yet, calling `progress(MB done, MB in
+    all)` as it goes. The first run otherwise sits silent for minutes."""
+    from faster_whisper.utils import _MODELS, download_model
+
+    try:
+        download_model(model, local_files_only=True)
+        return
+    except Exception:
+        pass
+    import huggingface_hub
+    from huggingface_hub.utils import logging as hf_logging
+
+    hf_logging.set_verbosity_error()  # no warnings over the editor's screen
+    expected = MODEL_MB.get(model, 0)
+    _ByteProgress.report = lambda done, total: progress(done / 1e6, max(expected, total / 1e6))
+    try:
+        huggingface_hub.snapshot_download(
+            model if "/" in model else _MODELS[model],
+            allow_patterns=MODEL_FILES,
+            tqdm_class=_ByteProgress,
+        )
+    except TypeError:  # a huggingface_hub without byte progress: download without it
+        download_model(model)
+    finally:
+        _ByteProgress.report = None
 
 
 def _invented(segment) -> bool:
