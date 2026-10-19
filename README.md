@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/voxtex-lockup-on-dark.svg">
-    <img alt="voxtex" src="assets/voxtex-lockup-on-light.svg" width="280">
+    <img alt="voxtex" src="assets/voxtex-lockup-on-light.svg" width="420">
   </picture>
 </p>
 
@@ -69,8 +69,11 @@ voxtex edit chapters/results.tex         # open a specific chapter
 ```
 
 In the editor, `ctrl+space` starts and stops recording (`esc` cancels); the text goes
-at the cursor, or replaces the selection if you selected something. `ctrl+z` undoes,
-`ctrl+o` opens another chapter, `ctrl+q` quits. voxtex saves after every voice edit (with a backup in
+at the cursor, or replaces the selection if you selected something. Say punctuation
+("κόμμα", "full stop") and it becomes the mark; say "undo" ("αναίρεση", "undo twice") to
+take back the last edit. If Whisper only heard noise, or wasn't sure of the language and
+another one fits better, nothing odd is written: a message shows what it heard so you
+can say it again. `ctrl+z` undoes, `ctrl+o` opens another chapter, `ctrl+q` quits. voxtex saves after every voice edit (with a backup in
 `.voxtex/backups/` before the first save), so your PDF viewer and other editors see
 the changes right away.
 

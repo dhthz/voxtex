@@ -20,6 +20,7 @@ from voxtex.engine.decide import (
     Insert,
     Replace,
     UncertainInsert,
+    Unclear,
     Wait,
     parse_decision,
 )
@@ -44,6 +45,8 @@ def escape_plain(text: str) -> str:
 MAX_PENDING_CHARS = 1200  # force a decision once this much speech is waiting
 MAX_PENDING_SECONDS = 20.0
 NEARBY_CHARS = 800
+# "Unclear" is only believed for a short clip: a long one is real speech, even if garbled.
+UNCLEAR_MAX_WORDS = 8
 
 
 @dataclass
@@ -235,6 +238,9 @@ class Engine:
             decision, step, report = self._ask(messages, speech)
         except ChainExhausted as e:
             return self.as_heard(speech, str(e))
+        if isinstance(decision, Unclear) and len(speech.split()) <= UNCLEAR_MAX_WORDS:
+            notice = f'Didn\'t catch that ("{speech}"), so nothing was written. Say it again.'
+            return self._finish(Step(decision, notices=[notice]), step, messages, report)
         if not isinstance(decision, Insert | UncertainInsert):
             # It was told not to, but a model may still refuse or "answer": keep the words.
             latex = decision.latex if has_latex(decision) else escape_plain(speech)
@@ -314,7 +320,7 @@ class Engine:
         match d:
             case Wait():
                 return Step(d)
-            case Ignore():
+            case Ignore() | Unclear():
                 buf.clear_pending()
                 return Step(d)
             case Insert(latex=latex):

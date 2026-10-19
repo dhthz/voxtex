@@ -17,6 +17,13 @@ class Ignore(BaseModel):
     action: Literal["ignore"]
 
 
+class Unclear(BaseModel):
+    """Dictation only: the transcript is speech-recognition noise, not words."""
+
+    action: Literal["unclear"]
+    note: str = ""
+
+
 class Insert(BaseModel):
     action: Literal["insert"]
     latex: str = Field(min_length=1)
@@ -40,7 +47,8 @@ class UncertainInsert(BaseModel):
 
 
 Decision = Annotated[
-    Wait | Ignore | Insert | Replace | Delete | UncertainInsert, Field(discriminator="action")
+    Wait | Ignore | Unclear | Insert | Replace | Delete | UncertainInsert,
+    Field(discriminator="action"),
 ]
 _ADAPTER: TypeAdapter[Decision] = TypeAdapter(Decision)
 

@@ -185,6 +185,37 @@ async def test_doubts_become_a_toast_not_a_latex_comment(editor):
         assert app.area.fresh[-1][3] == "voxtex.unsure"
 
 
+async def test_noise_is_not_written_and_says_what_was_heard(editor):
+    app, path, llm = editor
+    async with app.run_test(notifications=True) as pilot:
+        area = app.area
+        area.move_cursor((len(area.document.lines) - 1, 0))
+        before = path.read_text()
+        await talk(app, pilot, "Andes-Lee, 커버 at core.")  # Whisper's noise: no model call
+        llm.replies.append({"action": "unclear", "note": "random letters"})
+        await talk(app, pilot, "M-A-U-A-O-E")  # the model can't read it as words
+        assert path.read_text() == before
+        assert len(llm.seen) == 1
+        assert sum("Didn't catch that" in n.message for n in app._notifications) == 2
+        # A long recording is real speech, even if the model calls it unclear.
+        llm.replies.append({"action": "unclear"})
+        await talk(app, pilot, "the system stores triples in a relational database we built")
+        assert "relational database" in path.read_text()
+
+
+async def test_saying_undo_undoes(editor):
+    app, path, llm = editor
+    async with app.run_test() as pilot:
+        area = app.area
+        area.move_cursor((len(area.document.lines) - 1, 0))
+        llm.replies.append({"action": "insert", "latex": "It reaches 0.71."})
+        await talk(app, pilot, "it reaches 0.71")
+        assert "0.71" in path.read_text()
+        await talk(app, pilot, "Undo the last change.")
+        assert "0.71" not in path.read_text()
+        assert len(llm.seen) == 1
+
+
 def test_pill_never_changes_size():
     from voxtex.editor import pill
 

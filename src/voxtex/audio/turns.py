@@ -16,6 +16,9 @@ _FILLER_PHRASES = {
     "thank you", "thanks for watching", "thank you for watching", "you", "bye",
     "ευχαριστω", "ευχαριστω πολυ", "υποτιτλοι authorwave", "υποτιτλισμος authorwave",
 }  # fmt: skip
+# Whisper's stock phrases from subtitled training videos: real dictation never contains them.
+_HALLUCINATION_MARKS = ("authorwave", "υποτιτλ", "subtitles by", "izlediginiz icin", "abone ol")
+_ONE_PHRASE_LOOPING = re.compile(r"^(.{1,40}?)(?: \1)+$")
 _END_OF_SENTENCE = re.compile(r"[.!?;·…»\"']\s*$")
 MIN_WORDS_TO_DECIDE_EARLY = 6
 
@@ -37,6 +40,38 @@ def is_filler(text: str, prompt: str = "") -> bool:
     if norm in _FILLER_PHRASES:
         return True
     return all(w in _FILLER_WORDS for w in norm.split())
+
+
+def is_garbled(text: str) -> bool:
+    """True for Whisper output that is noise rather than anything said: letters from scripts
+    nobody spoke (speech is only ever Greek or English here), stock subtitle phrases, or one
+    phrase looping ("All right. All right. All right.")."""
+    foreign = sum(1 for c in text if c.isalpha() and not _greek_or_latin(c))
+    if foreign >= 2:
+        return True
+    norm = _norm(text)
+    if any(mark in norm for mark in _HALLUCINATION_MARKS):
+        return True
+    return bool(_ONE_PHRASE_LOOPING.match(norm))
+
+
+_UNDO = re.compile(
+    r"^(?:undo|undo (?:that|it|the last (?:change|edit|one))|αναιρεση|αναιρεσε(?: το| αυτο)?)"
+    r"(?: (twice|two times|three times|δυο φορες|τρεις φορες|[23] φορες))?$"
+)
+_TIMES = {"twice": 2, "two times": 2, "δυο φορες": 2, "2 φορες": 2,
+          "three times": 3, "τρεις φορες": 3, "3 φορες": 3}  # fmt: skip
+
+
+def spoken_undo(text: str) -> int:
+    """How many edits to undo if the whole recording was "undo" ("undo twice", "αναίρεση"),
+    else 0. Only the whole recording counts: "undo" inside a sentence is dictation."""
+    m = _UNDO.match(_norm(text))
+    return (_TIMES.get(m.group(1), 1) if m.group(1) else 1) if m else 0
+
+
+def _greek_or_latin(c: str) -> bool:
+    return unicodedata.name(c, "").startswith(("LATIN", "GREEK"))
 
 
 class TurnTimer:

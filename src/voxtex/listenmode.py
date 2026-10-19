@@ -21,7 +21,7 @@ from rich.live import Live
 from voxtex.app import open_workspace
 from voxtex.audio.capture import MicError, Segmenter, Utterance, open_microphone, webrtc_vad
 from voxtex.audio.stt import SttChoice, Transcriber, Transcript, build_transcriber, choose_stt
-from voxtex.audio.turns import TurnTimer, is_filler
+from voxtex.audio.turns import TurnTimer, is_filler, is_garbled
 from voxtex.engine.decide import Wait
 from voxtex.project.index import STATE_DIR, ProjectIndex, _is_spoken_term
 from voxtex.providers import ChainExhausted
@@ -268,7 +268,11 @@ def run_listen(
                         "stt_ms": round(t.seconds * 1000),
                         "audio_ms": round(t.audio_seconds * 1000),
                     })  # fmt: skip
-                    if heard.text and not is_filler(heard.text, stt.prompt):
+                    if (
+                        heard.text
+                        and not is_filler(heard.text, stt.prompt)
+                        and not is_garbled(heard.text)
+                    ):
                         engine.buffer.add_utterance(heard.text, heard.utterance.started)
                         speech_end = heard.utterance.ended
                 now = time.monotonic()

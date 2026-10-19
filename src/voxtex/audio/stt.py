@@ -32,6 +32,10 @@ _HALLUCINATION_LOGPROB = -1.0
 # misjudged, and a wrong language garbles the whole sentence.
 SWITCH_MIN_SECONDS = 1.5
 SWITCH_MIN_SHARE = 0.75  # of the probability among the allowed languages
+# Below this average log-probability Whisper was guessing (on a short clip, often because it
+# picked the wrong language): the other allowed languages get a try and the surest one wins.
+RECHECK_LOGPROB = -0.7
+NOTHING_HEARD = -10.0
 
 
 @dataclass
@@ -41,6 +45,7 @@ class Transcript:
     audio_seconds: float
     backend: str
     language: str = ""
+    confidence: float = 0.0  # Whisper's average log-probability per token (0 = not known)
 
 
 class Transcriber(Protocol):
@@ -215,26 +220,44 @@ class LocalWhisper:
 
                 m.encode, restore = encode_once, original
         try:
-            segments, info = m.transcribe(
-                audio,
-                language=language,
-                initial_prompt=prompt[:PROMPT_MAX_CHARS] or None,
-                beam_size=5 if self.device == "cuda" else 1,
-                condition_on_previous_text=False,
-                without_timestamps=True,
-                vad_filter=False,  # we already cut utterances with our own VAD
-            )
-            parts = [s.text for s in segments if not _invented(s)]
+            text, confidence, detected = self._decode(audio, language, prompt)
         finally:
             if restore is not None:
                 m.encode = restore
+        if self.language is None and confidence < RECHECK_LOGPROB:
+            for other in self.languages:
+                if other == language:
+                    continue
+                t, c, _ = self._decode(audio, other, prompt)
+                if c > confidence:
+                    text, confidence, language = t, c, other
+                    self.last_language = other
         return Transcript(
-            "".join(parts).strip(),
+            text,
             time.monotonic() - start,
             len(audio) / SAMPLE_RATE,
             self.name,
-            language or info.language,
+            language or detected,
+            confidence,
         )
+
+    def _decode(self, audio: np.ndarray, language: str | None, prompt: str):
+        """(text, average log-probability, detected language) for one pass of Whisper."""
+        segments, info = self._model.transcribe(
+            audio,
+            language=language,
+            initial_prompt=prompt[:PROMPT_MAX_CHARS] or None,
+            beam_size=5 if self.device == "cuda" else 1,
+            condition_on_previous_text=False,
+            without_timestamps=True,
+            vad_filter=False,  # we already cut utterances with our own VAD
+        )
+        kept = [s for s in segments if not _invented(s)]
+        if not kept:
+            return "", NOTHING_HEARD, info.language
+        tokens = sum(max(1, len(s.tokens)) for s in kept)
+        confidence = sum(s.avg_logprob * max(1, len(s.tokens)) for s in kept) / tokens
+        return "".join(s.text for s in kept).strip(), confidence, info.language
 
 
 def _invented(segment) -> bool:

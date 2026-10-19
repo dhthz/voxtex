@@ -1,10 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="120" viewBox="0 0 480 120" role="img" aria-label="voxtex">
-  <g fill="#0969da">
-    <rect x="8"  y="48" width="10" height="24" rx="5"/>
-    <rect x="26" y="34" width="10" height="52" rx="5"/>
-    <rect x="44" y="20" width="10" height="80" rx="5"/>
-    <rect x="62" y="38" width="10" height="44" rx="5"/>
-    <rect x="80" y="50" width="10" height="20" rx="5"/>
-  </g>
-  <text x="112" y="82" font-family="'Latin Modern Roman', 'CMU Serif', Georgia, 'Times New Roman', serif" font-size="68" fill="#1f2328"><tspan fill="#0969da">\</tspan>voxtex</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 704 128" width="704" height="128" role="img" aria-label="voxtex" shape-rendering="crispEdges">
+  <title>voxtex</title>
+  <path d="M0 48h32v48h-32zM64 48h32v48h-32zM32 96h32v32h-32zM128 48h96v32h-96zM128 96h96v32h-96zM128 48h32v80h-32zM192 48h32v80h-32zM256 48h32v32h-32zM320 48h32v32h-32zM272 72h64v32h-64zM256 96h32v32h-32zM320 96h32v32h-32zM384 16h32v112h-32zM384 48h64v32h-64zM416 96h32v32h-32zM480 48h96v16h-96zM480 48h32v80h-32zM544 48h32v48h-32zM480 80h96v16h-96zM480 112h96v16h-96zM608 48h32v32h-32zM672 48h32v32h-32zM624 72h64v32h-64zM608 96h32v32h-32zM672 96h32v32h-32z" fill="#0E2233"/>
 </svg>

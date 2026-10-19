@@ -322,3 +322,58 @@ def test_noise_gate_learns_the_room():
     for _ in range(100):
         quiet.loud_enough(frame(0.0003))  # a quiet room
     assert quiet.loud_enough(frame(0.003))  # soft speech still gets through
+
+
+@pytest.mark.parametrize(
+    "text, garbled",
+    [
+        ("Υπότιτλοι AUTHORWAVE", True),
+        ("İzlediğiniz için teşekkür ederim.", True),
+        ("All right. All right. All right.", True),
+        ("Περδίδι, Περδίδι, Περδίδι", True),
+        ("Andes-Lee, 커버 at core 20 minutes.", True),
+        ("Το Sesame υποστηρίζει ερωτήματα RQL, κόμμα, και SeRQL.", False),
+        ("Create a table, 5 rows and 2 columns.", False),
+        ("Σύμφωνα με τον Müller, café.", False),
+    ],
+)
+def test_is_garbled(text, garbled):
+    from voxtex.audio.turns import is_garbled
+
+    assert is_garbled(text) is garbled
+
+
+def test_spoken_undo():
+    from voxtex.audio.turns import spoken_undo
+
+    assert spoken_undo("Undo the last change.") == 1
+    assert spoken_undo("Undo twice.") == 2
+    assert spoken_undo("Αναίρεσε το δύο φορές") == 2
+    assert spoken_undo("Undo the changes we made to the table") == 0  # dictation
+    assert spoken_undo("Πρέπει να κάνω undo") == 0
+
+
+class _Features:
+    nb_max_frames = 3000
+
+    def __call__(self, audio):
+        return np.zeros((80, 100), dtype=np.float32)
+
+
+class _FakeWhisperModel:
+    feature_extractor = _Features()
+
+    def encode(self, features):
+        return "encoded"
+
+
+def test_an_unsure_transcript_is_tried_in_the_other_language(monkeypatch):
+    w = stt.LocalWhisper("x", languages=("el", "en"))
+    w._model = _FakeWhisperModel()
+    heard = {"en": ("Belit.", -1.4, "en"), "el": ("Βρες το.", -0.3, "el")}
+    monkeypatch.setattr(w, "_decode", lambda audio, lang, prompt: heard[lang])
+    monkeypatch.setattr(w, "_pick_language", lambda encoded, seconds: "en")
+    t = w.transcribe(np.zeros(16000, dtype=np.float32))
+    assert (t.text, t.language, w.last_language) == ("Βρες το.", "el", "el")
+    heard["en"] = ("Undo twice.", -0.2, "en")  # sure enough: no second pass
+    assert w.transcribe(np.zeros(16000, dtype=np.float32)).text == "Undo twice."

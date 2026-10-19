@@ -27,6 +27,7 @@ from textual.widgets import OptionList, Static, TextArea
 from textual.widgets.text_area import TextAreaTheme
 
 from voxtex.app import build_chain, open_project
+from voxtex.audio.turns import is_garbled, spoken_undo
 from voxtex.config import Config
 from voxtex.editor import pill
 from voxtex.editor.highlight import char_to_byte, latex_spans
@@ -387,6 +388,14 @@ class EditorApp(App):
             if not said:
                 self.call_from_thread(self.finish, None, "")
                 return
+            if is_garbled(said):  # Whisper's noise, not anything said
+                unheard = f'Didn\'t catch that ("{_tail(said, 50)}"). Say it again.'
+                self.call_from_thread(self.finish, None, "", unheard)
+                return
+            undos = spoken_undo(said)
+            if undos and not self.selection_range:
+                self.call_from_thread(self.voice_undo, undos)
+                return
             self.said, self.phase = said, "writing"
             try:
                 if self.selection_range:
@@ -402,6 +411,13 @@ class EditorApp(App):
             self.call_from_thread(self.finish, step, None)
 
         self.run_worker(work, thread=True)
+
+    def voice_undo(self, times: int) -> None:
+        for _ in range(times):
+            self.area.undo()
+        self.phase, self.said = "ready", ""
+        self.note("Undone" if times == 1 else f"Undone {times} times")
+        self.save()
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Worker thread. The whole recording at once, so Whisper hears full sentences."""
@@ -423,13 +439,13 @@ class EditorApp(App):
         })  # fmt: skip
         return "" if is_filler(t.text, self.prompt) else t.text
 
-    def finish(self, step: Step | None, error: str | None) -> None:
+    def finish(self, step: Step | None, error: str | None, unheard: str = "") -> None:
         self.phase = "ready"
         self.said = ""
         if error:
             self.note(error, "error")
         elif step is None:
-            self.note("Didn't catch any words.")
+            self.note(unheard or "Didn't catch any words.", "warning" if unheard else "information")
         else:
             self.apply_step(step)
 
