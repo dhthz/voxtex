@@ -33,6 +33,10 @@ def test_main_preferred_over_standalone_and_subfiles(make_project):
     assert find_main(root).name == "thesis.tex"
 
 
+def test_main_found_from_inside_a_chapter_folder(sample_thesis):
+    assert find_main(sample_thesis / "chapters") == sample_thesis / "main.tex"
+
+
 def test_no_main_raises(make_project):
     root = make_project({"a.tex": "just text"})
     with pytest.raises(DiscoveryError):

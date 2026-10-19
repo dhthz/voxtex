@@ -34,9 +34,9 @@ def test_segmenter_cuts_on_pause_with_pre_roll():
     us = feed(seg, [(20, False), (34, True), (30, False)])  # ~1 s speech, 0.9 s silence
     assert len(us) == 1
     u = us[0]
-    # pre-roll (7 silent + the 3 voiced frames that started it) + 31 more voiced
+    # pre-roll (5 silent + the 5 voiced frames that started it) + 29 more voiced
     # + 23 silent frames until the 0.7 s pause
-    assert len(u.audio) == (10 + 31 + 23) * FRAME_SAMPLES
+    assert len(u.audio) == (10 + 29 + 23) * FRAME_SAMPLES
     assert u.audio.dtype == np.float32 and u.audio.max() == pytest.approx(3000 / 32768)
     assert u.ended == pytest.approx(54 * FRAME_MS / 1000)
 
@@ -79,17 +79,20 @@ def test_turn_timer():
     t = TurnTimer(decision_pause=2.5, max_pending_s=20)
     long_sentence = "We fine-tune each encoder for three epochs."
     assert t.check("", None, 0, False, 10) == (False, False)
-    # finished sentence: decide right away (not forced)
-    assert t.check(long_sentence, 1.0, 9.9, False, 10) == (True, False)
+    # a finished sentence after a breath: maybe more is coming, so not yet
+    assert t.check(long_sentence, 1.0, 9.6, False, 10) == (False, False)
+    # ...but after a clear pause, decide (not forced)
+    assert t.check(long_sentence, 1.0, 8.7, False, 10) == (True, False)
     # fragment: wait for the long pause, then force
-    assert t.check("so we use", 1.0, 9.0, False, 10) == (False, False)
+    assert t.check("so we use", 1.0, 8.0, False, 10) == (False, False)
     assert t.check("so we use", 1.0, 7.0, False, 10) == (True, True)
-    # still talking: never, unless pending for too long
+    # still talking: never, however long it has been
     assert t.check(long_sentence, 1.0, 9.9, True, 10) == (False, False)
-    assert t.check(long_sentence, 1.0, 9.9, True, 22) == (True, True)
+    assert t.check(long_sentence, 1.0, 9.9, True, 22) == (False, False)
+    assert t.check(long_sentence, 1.0, 21.9, False, 22) == (True, True)  # the next pause
     # after the model said "wait", the same text isn't sent again until the pause
     t.model_waited(long_sentence)
-    assert t.check(long_sentence, 1.0, 9.9, False, 10) == (False, False)
+    assert t.check(long_sentence, 1.0, 8.7, False, 10) == (False, False)
     assert t.check(long_sentence, 1.0, 7.0, False, 10) == (True, True)
 
 
@@ -235,7 +238,17 @@ def test_language_choice_is_limited_to_allowed():
             return [[("<|zh|>", 0.5), ("<|ru|>", 0.3), ("<|el|>", 0.15), ("<|en|>", 0.05)]]
 
     w._model = type("M", (), {"model": FakeCT2})()
-    assert w._pick_language(None) == "el"
+    assert w._pick_language(None, 3.0) == "el"
+
+
+def test_language_switch_needs_clear_evidence():
+    w = stt.LocalWhisper("x", languages=("el", "en"))
+    assert w.last_language == "el"  # the document's language to start with
+    assert w._sticky([("en", 0.9), ("el", 0.1)], 0.8) == "el"  # too short to trust
+    assert w._sticky([("en", 0.55), ("el", 0.45)], 4.0) == "el"  # too close to call
+    assert w._sticky([("en", 0.9), ("el", 0.1)], 3.0) == "en"  # a clear English sentence
+    assert w._sticky([("el", 0.6), ("en", 0.4)], 3.0) == "en"  # stays until clear again
+    assert w._sticky([("el", 0.95), ("en", 0.05)], 2.0) == "el"
 
 
 def test_reasoning_effort_sent_and_dropped_if_unsupported(monkeypatch):
@@ -291,3 +304,21 @@ def test_match_terms_finds_thesis_spelling_of_misheard_words():
     assert match_terms("Γράψε SCRQL αντί για RQL", terms) == ["SeRQL", "RQL"]
     assert match_terms("το Jenna και το Sesami", terms) == ["Sesame", "Jena"]
     assert match_terms("τίποτα σχετικό εδώ", terms) == []
+
+
+def test_noise_gate_learns_the_room():
+    from voxtex.audio.capture import FRAME_SAMPLES, NoiseGate
+
+    rng = np.random.default_rng(0)
+
+    def frame(rms):
+        return (rng.normal(0, rms, FRAME_SAMPLES) * 32768).astype(np.int16).tobytes()
+
+    gate = NoiseGate()
+    fan = [gate.loud_enough(frame(0.01)) for _ in range(400)]  # 12 s of a noisy fan
+    assert not any(fan[-100:])  # learned: the fan is not speech
+    assert all(gate.loud_enough(frame(0.08)) for _ in range(30))  # talking over it
+    quiet = NoiseGate()
+    for _ in range(100):
+        quiet.loud_enough(frame(0.0003))  # a quiet room
+    assert quiet.loud_enough(frame(0.003))  # soft speech still gets through

@@ -42,16 +42,21 @@ def is_filler(text: str, prompt: str = "") -> bool:
 class TurnTimer:
     """Decides when the pending speech goes to the model.
 
-    - A finished-looking sentence (ends with punctuation, 6+ words) is decided as soon
-      as its utterance ends: that's what keeps latency near the 2 s target.
+    - A finished-looking sentence (ends with punctuation, 6+ words) is decided after
+      `early_pause` of silence. Not sooner: Whisper puts a full stop after every chunk,
+      so a breath in the middle of a sentence looks like its end.
     - Anything else waits for `decision_pause` of silence, then is forced.
-    - Speech pending longer than `max_pending_s` is forced too.
+    - Speech pending longer than `max_pending_s` is forced at the next pause, never
+      while you are still talking.
     - After the model answered "wait", it isn't asked again until the long pause.
     """
 
-    def __init__(self, decision_pause: float = 2.5, max_pending_s: float = 20.0):
+    def __init__(
+        self, decision_pause: float = 2.5, max_pending_s: float = 20.0, early_pause: float = 1.2
+    ):
         self.decision_pause = decision_pause
         self.max_pending_s = max_pending_s
+        self.early_pause = min(early_pause, decision_pause)
         self.waited_on = ""  # pending text the model already said "wait" to
 
     def check(
@@ -63,16 +68,14 @@ class TurnTimer:
         now: float,
     ) -> tuple[bool, bool]:
         """(decide now?, force a decision?)"""
-        if not pending or pending_since is None:
+        if not pending or pending_since is None or speaking:
             return False, False
-        if now - pending_since >= self.max_pending_s:
-            return True, True
-        if speaking:
-            return False, False
-        if now - last_voice >= self.decision_pause:
+        silence = now - last_voice
+        if silence >= self.decision_pause or now - pending_since >= self.max_pending_s:
             return True, True
         early = (
-            pending != self.waited_on
+            silence >= self.early_pause
+            and pending != self.waited_on
             and _END_OF_SENTENCE.search(pending) is not None
             and len(pending.split()) >= MIN_WORDS_TO_DECIDE_EARLY
         )

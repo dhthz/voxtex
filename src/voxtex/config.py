@@ -66,7 +66,7 @@ DEFAULTS: dict[str, Any] = {
         "language": "auto",  # auto | el | en
     },
     "listen": {
-        "utterance_pause": 0.7,  # silence that ends an utterance (sent to speech-to-text)
+        "utterance_pause": 0.9,  # silence that ends an utterance (sent to speech-to-text)
         "decision_pause": 2.5,  # silence after which a pending thought is decided
         "max_pending_seconds": 20.0,
         "mic": "",  # device name or index; empty = system default
@@ -106,7 +106,7 @@ class Config(BaseModel):
     stt_local_model: str = "auto"
     stt_cloud_model: str = "whisper-large-v3-turbo"
     stt_language: str = "auto"
-    utterance_pause: float = 0.7
+    utterance_pause: float = 0.9
     decision_pause: float = 2.5
     max_pending_seconds: float = 20.0
     mic: str = ""

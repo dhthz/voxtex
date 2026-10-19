@@ -19,7 +19,7 @@ import numpy as np
 SAMPLE_RATE = 16000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
-START_FRAMES = 3  # voiced frames in a row that start an utterance
+START_FRAMES = 5  # voiced frames in a row (150 ms) that start an utterance
 PRE_ROLL_MS = 300  # audio kept from before speech started, so first syllables aren't cut
 
 
@@ -39,7 +39,7 @@ class Segmenter:
         self,
         is_speech: Callable[[bytes], bool],
         pause_s: float = 0.7,
-        min_speech_s: float = 0.3,
+        min_speech_s: float = 0.4,
         max_utterance_s: float = 30.0,
     ):
         self.is_speech = is_speech
@@ -90,11 +90,37 @@ class Segmenter:
         return Utterance(audio, self.started, self.last_voice)
 
 
-def webrtc_vad(aggressiveness: int = 2) -> Callable[[bytes], bool]:
+class NoiseGate:
+    """Tracks the room's background level and only lets through frames clearly louder
+    than it. WebRTC's VAD on its own takes fans, typing and music for speech.
+
+    The background is a low percentile of the last few seconds: steady noise sits there,
+    while speech, which keeps stopping between words, never does."""
+
+    def __init__(self, ratio: float = 3.0, window_s: float = 4.0, min_floor: float = 0.0005):
+        self.ratio = ratio
+        self.min_floor = min_floor
+        self.recent: deque[float] = deque(maxlen=round(window_s * 1000 / FRAME_MS))
+
+    @property
+    def floor(self) -> float:
+        if len(self.recent) < 10:
+            return self.min_floor
+        return max(self.min_floor, float(np.percentile(self.recent, 10)))
+
+    def loud_enough(self, frame: bytes) -> bool:
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+        rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+        self.recent.append(rms)
+        return rms > self.floor * self.ratio
+
+
+def webrtc_vad(aggressiveness: int = 3) -> Callable[[bytes], bool]:
     import webrtcvad
 
     vad = webrtcvad.Vad(aggressiveness)
-    return lambda frame: vad.is_speech(frame, SAMPLE_RATE)
+    gate = NoiseGate()
+    return lambda frame: gate.loud_enough(frame) and vad.is_speech(frame, SAMPLE_RATE)
 
 
 # --- the microphone ------------------------------------------------------------------------------
@@ -158,6 +184,8 @@ class Microphone:
         self._proc: subprocess.Popen | None = None
         self.utterances: queue.Queue[Utterance] = queue.Queue()
         self.level = 0.0  # recent loudness 0..1, for the status line
+        self.peak = 0.0  # loudest frame so far (RMS), for `doctor`
+        self.recording: list[np.ndarray] | None = None  # set to [] to also keep raw frames
         self._frames: queue.Queue[np.ndarray] = queue.Queue()
         self._stream = None
         self._stop = threading.Event()
@@ -254,7 +282,17 @@ class Microphone:
                 frame, data = data[:FRAME_SAMPLES], data[FRAME_SAMPLES:]
                 rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768) ** 2)))
                 self.level = 0.8 * self.level + 0.2 * min(1.0, rms * 8)
+                self.peak = max(self.peak, rms)
+                if self.recording is not None:
+                    self.recording.append(frame)
                 u = self.segmenter.feed(frame, time.monotonic())
                 if u is not None:
                     self.utterances.put(u)
             self._carry = data
+
+
+def open_microphone(segmenter: Segmenter, wanted: str = "") -> Microphone:
+    """The microphone for `wanted` (index, name part or PulseAudio source; "" = default)."""
+    if prefer_parec() and not wanted.isdigit():
+        return Microphone(segmenter, backend="parec", source=wanted)
+    return Microphone(segmenter, pick_device(wanted))

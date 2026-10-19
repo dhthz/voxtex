@@ -76,8 +76,20 @@ def find_main(path: Path) -> Path:
     path = path.resolve()
     if path.is_file():
         return path
+    found = _best_main(path, _iter_tex(path))
+    # Started inside the thesis (e.g. chapters/): the main file is usually a few levels up.
+    for parent in list(path.parents)[:MAX_DEPTH]:
+        if found is not None or parent == Path.home() or parent == parent.parent:
+            break
+        found = _best_main(parent, sorted(parent.glob("*.tex")))
+    if found is None:
+        raise DiscoveryError(f"No main .tex file (with \\documentclass) found in or above {path}")
+    return found
+
+
+def _best_main(path: Path, files) -> Path | None:
     candidates: list[tuple[tuple, Path]] = []
-    for p in _iter_tex(path):
+    for p in files:
         text = strip_comments(read_text(p))
         m = _DOCCLASS.search(text)
         if not m or not _BEGIN_DOC.search(text) or m.group(1).strip() in NON_MAIN_CLASSES:
@@ -87,9 +99,8 @@ def find_main(path: Path) -> Path:
         score = (p.parent == path, p.stem.lower() in MAIN_NAMES, n_includes, -len(p.parts))
         candidates.append((score, p))
     if not candidates:
-        raise DiscoveryError(f"No main .tex file (with \\documentclass) found under {path}")
-    candidates.sort(key=lambda c: c[0], reverse=True)
-    return candidates[0][1]
+        return None
+    return max(candidates, key=lambda c: c[0])[1]
 
 
 def _rel(p: Path, root: Path) -> str:

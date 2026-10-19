@@ -28,6 +28,10 @@ PROMPT_MAX_CHARS = 400
 # Whisper's usual inventions on near-silence.
 _HALLUCINATION_NO_SPEECH = 0.6
 _HALLUCINATION_LOGPROB = -1.0
+# Switching language between utterances needs a clear signal: short chunks are often
+# misjudged, and a wrong language garbles the whole sentence.
+SWITCH_MIN_SECONDS = 1.5
+SWITCH_MIN_SHARE = 0.75  # of the probability among the allowed languages
 
 
 @dataclass
@@ -36,6 +40,7 @@ class Transcript:
     seconds: float  # time spent transcribing
     audio_seconds: float
     backend: str
+    language: str = ""
 
 
 class Transcriber(Protocol):
@@ -147,6 +152,7 @@ class LocalWhisper:
         self.device = device
         self.language = None if language == "auto" else language
         self.languages = languages
+        self.last_language = languages[0] if languages else None
         self._model = None
 
     def load(self) -> None:
@@ -165,11 +171,24 @@ class LocalWhisper:
         self._model = None
         gc.collect()
 
-    def _pick_language(self, encoder_output) -> str | None:
+    def _pick_language(self, encoder_output, seconds: float) -> str | None:
         probs = self._model.model.detect_language(encoder_output)[0]
         ranked = [(tok[2:-2], p) for tok, p in probs]
         allowed = [(lang, p) for lang, p in ranked if lang in self.languages]
-        return (allowed or ranked)[0][0] if ranked else None
+        if not allowed:
+            return ranked[0][0] if ranked else None
+        return self._sticky(allowed, seconds)
+
+    def _sticky(self, allowed: list[tuple[str, float]], seconds: float) -> str:
+        """The likeliest allowed language, but stay with the last one unless the evidence
+        for a switch is clear (a long enough chunk, most of the probability)."""
+        lang, p = max(allowed, key=lambda lp: lp[1])
+        share = p / (sum(q for _, q in allowed) or 1)
+        last = self.last_language
+        if last and lang != last and (seconds < SWITCH_MIN_SECONDS or share < SWITCH_MIN_SHARE):
+            lang = last
+        self.last_language = lang
+        return lang
 
     def transcribe(self, audio: np.ndarray, prompt: str = "") -> Transcript:
         self.load()
@@ -185,7 +204,7 @@ class LocalWhisper:
             n = m.feature_extractor.nb_max_frames
             features = m.feature_extractor(audio)
             encoded = m.encode(pad_or_trim(features[..., :n]))
-            language = self._pick_language(encoded)
+            language = self._pick_language(encoded, len(audio) / SAMPLE_RATE)
             if features.shape[-1] < n:  # a single 30 s window: reuse it
                 calls = {"n": 0}
                 original = m.encode
@@ -196,7 +215,7 @@ class LocalWhisper:
 
                 m.encode, restore = encode_once, original
         try:
-            segments, _info = m.transcribe(
+            segments, info = m.transcribe(
                 audio,
                 language=language,
                 initial_prompt=prompt[:PROMPT_MAX_CHARS] or None,
@@ -205,20 +224,27 @@ class LocalWhisper:
                 without_timestamps=True,
                 vad_filter=False,  # we already cut utterances with our own VAD
             )
-            parts = [
-                s.text
-                for s in segments
-                if not (
-                    s.no_speech_prob > _HALLUCINATION_NO_SPEECH
-                    and s.avg_logprob < _HALLUCINATION_LOGPROB
-                )
-            ]
+            parts = [s.text for s in segments if not _invented(s)]
         finally:
             if restore is not None:
                 m.encode = restore
         return Transcript(
-            "".join(parts).strip(), time.monotonic() - start, len(audio) / SAMPLE_RATE, self.name
+            "".join(parts).strip(),
+            time.monotonic() - start,
+            len(audio) / SAMPLE_RATE,
+            self.name,
+            language or info.language,
         )
+
+
+def _invented(segment) -> bool:
+    """Whisper's output on noise: unsure there was speech and unsure of the words, or the
+    same phrase looping."""
+    unsure = (
+        segment.no_speech_prob > _HALLUCINATION_NO_SPEECH
+        and segment.avg_logprob < _HALLUCINATION_LOGPROB
+    )
+    return unsure or segment.no_speech_prob > 0.9 or segment.compression_ratio > 2.4
 
 
 def to_wav(audio: np.ndarray) -> bytes:
