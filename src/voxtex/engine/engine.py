@@ -12,7 +12,7 @@ from pathlib import Path
 
 from voxtex.config import Config
 from voxtex.engine import retrieve
-from voxtex.engine.buffer import Block, Buffer
+from voxtex.engine.buffer import SELECTION_ID, Block, Buffer
 from voxtex.engine.decide import (
     Decision,
     Delete,
@@ -32,6 +32,14 @@ from voxtex.providers import Chain, ChainExhausted, ChainResult
 from voxtex.validate import Report, ValidationContext, Validator, labels_in
 from voxtex.validate.citations import normalize_cite_keys
 from voxtex.validate.latin import wrap_latin
+
+LATEX_SPECIALS = {"%": r"\%", "&": r"\&", "_": r"\_", "#": r"\#", "$": r"\$"}
+
+
+def escape_plain(text: str) -> str:
+    """Spoken text made safe to put in LaTeX as it is."""
+    return "".join(LATEX_SPECIALS.get(c, c) for c in " ".join(text.split()))
+
 
 MAX_PENDING_CHARS = 1200  # force a decision once this much speech is waiting
 MAX_PENDING_SECONDS = 20.0
@@ -103,7 +111,7 @@ class Engine:
         before = self.location.before if self.location else ""
         if self.blocks_in_location:
             return nearby_text(before, NEARBY_CHARS)
-        older = [b for b in self.buffer.blocks if b not in recent]
+        older = [b for b in self.buffer.blocks if b not in recent and b.id != SELECTION_ID]
         written = "\n\n".join(b.latex for b in older)
         return nearby_text(before + ("\n\n" + written if written else ""), NEARBY_CHARS)
 
@@ -116,7 +124,9 @@ class Engine:
         speech = self.buffer.pending_text
         recent = self.buffer.recent(3)
         # Retrieval also looks at recent blocks, so "no wait, cite the other one" still works.
-        query = speech + " " + " ".join(b.latex for b in recent[-1:])
+        selected = self.buffer.get(SELECTION_ID)
+        focus = [selected] if selected else recent[-1:]
+        query = speech + " " + " ".join(b.latex for b in focus)
         nearby = self._nearby(recent)
         always = [self.idx.conventions.latin_wrapper] if self.idx.conventions.latin_wrapper else []
         return PromptContext(
@@ -129,6 +139,7 @@ class Engine:
             kinds=retrieve.kinds_mentioned(speech),
             force=force,
             terms=retrieve.match_terms(speech, self.idx.latin_terms),
+            selected=selected,
         )
 
     # --- main entry ------------------------------------------------------------------------------
@@ -148,6 +159,21 @@ class Engine:
             self.idx, self.context(force), self.config.style, self.config.language
         )
         speech = self.buffer.pending_text
+        decision, step, report = self._ask(messages, speech)
+        note = "; ".join(i.message for i in report.errors) if report else ""
+        applied = self.apply(decision, note)
+        return self._finish(applied, step, messages, report)
+
+    def _finish(self, applied: Step, step: Step, messages: list[dict], report) -> Step:
+        applied.provider, applied.input_tokens = step.provider, step.input_tokens
+        applied.output_tokens, applied.latency_s = step.output_tokens, step.latency_s
+        applied.notices = step.notices + applied.notices
+        applied.messages, applied.report = messages, report
+        applied.retried, applied.first_errors = step.retried, step.first_errors
+        return applied
+
+    def _ask(self, messages: list[dict], speech: str) -> tuple[Decision, Step, Report | None]:
+        """Ask the chain, polish, validate, and retry once with the problems listed."""
         step = Step(Wait(action="wait"), messages=messages)
         result: ChainResult[Decision] = self.chain.complete(messages, parse_decision)
         step.add(result)
@@ -177,15 +203,73 @@ class Engine:
                     report = self.validate(decision, speech)
             except ChainExhausted as e:
                 step.notices.append(f"retry failed: {e}")
+        return decision, step, report
 
-        note = "; ".join(i.message for i in report.errors) if report else ""
-        applied = self.apply(decision, note)
-        applied.provider, applied.input_tokens = step.provider, step.input_tokens
-        applied.output_tokens, applied.latency_s = step.output_tokens, step.latency_s
-        applied.notices = step.notices + applied.notices
-        applied.messages, applied.report = messages, report
-        applied.retried, applied.first_errors = step.retried, step.first_errors
-        return applied
+    # --- the editor: dictation and commands (Wispr Flow style) -----------------------------------
+
+    def _context(self, speech: str, before: str, selected: Block | None = None) -> PromptContext:
+        nearby = nearby_text(before, NEARBY_CHARS)
+        query = speech + (" " + selected.latex if selected else "")
+        always = [self.idx.conventions.latin_wrapper] if self.idx.conventions.latin_wrapper else []
+        return PromptContext(
+            pending=speech,
+            nearby=nearby,
+            recent=[],
+            bib=retrieve.match_bib(query, self.idx.bib),
+            labels=retrieve.match_labels(speech, self.idx.labels),
+            macros=retrieve.match_macros(speech, nearby, self.idx.preamble.macros, always),
+            kinds=retrieve.kinds_mentioned(speech),
+            terms=retrieve.match_terms(speech, self.idx.latin_terms),
+            selected=selected,
+        )
+
+    def _messages(self, ctx: PromptContext, mode: str) -> list[dict]:
+        return build_messages(self.idx, ctx, self.config.style, self.config.language, mode)
+
+    def dictate(self, speech: str, before: str) -> Step:
+        """Everything recorded is written: the model only formats it. If no model answers,
+        the words go in as heard."""
+        self.location = MarkerLocation(Path(), "", 0, before)
+        messages = self._messages(self._context(speech, before), "dictate")
+        try:
+            decision, step, report = self._ask(messages, speech)
+        except ChainExhausted as e:
+            return self.as_heard(speech, str(e))
+        if not isinstance(decision, Insert | UncertainInsert):
+            # It was told not to, but a model may still refuse or "answer": keep the words.
+            latex = decision.latex if has_latex(decision) else escape_plain(speech)
+            decision = Insert(action="insert", latex=latex)
+        problems = "; ".join(i.message for i in report.errors) if report else ""
+        note = "; ".join(x for x in (getattr(decision, "note", ""), problems) if x)
+        block = self.buffer.new_block(decision.latex, note)
+        if note:
+            decision = UncertainInsert(action="uncertain_insert", latex=decision.latex, note=note)
+        return self._finish(Step(decision, block), step, messages, report)
+
+    def as_heard(self, speech: str, why: str) -> Step:
+        """The words as Whisper heard them, for when no model could format them."""
+        latex = escape_plain(speech)
+        block = self.buffer.new_block(latex, f"written as heard ({why})")
+        return Step(UncertainInsert(action="uncertain_insert", latex=latex, note=block.note), block)
+
+    def command(self, instruction: str, selected: str, before: str) -> Step:
+        """Change the selected text as the speaker asked. Returns a Replace of block `sel`,
+        or Ignore (with a notice) if the model gave nothing usable."""
+        self.location = MarkerLocation(Path(), "", 0, before)
+        self.buffer.set_selection(selected)
+        sel = self.buffer.get(SELECTION_ID)
+        previous = Block(SELECTION_ID, selected)
+        try:
+            messages = self._messages(self._context(instruction, before, sel), "command")
+            decision, step, report = self._ask(messages, instruction)
+        finally:
+            self.buffer.set_selection("")
+        if not has_latex(decision):
+            return Step(Ignore(action="ignore"), notices=["The selection was left as it was."])
+        problems = "; ".join(i.message for i in report.errors) if report else ""
+        block = Block(SELECTION_ID, decision.latex, problems)
+        d = Replace(action="replace", block_id=SELECTION_ID, latex=decision.latex)
+        return self._finish(Step(d, block, previous), step, messages, report)
 
     def polish(self, d: Decision) -> Decision:
         """Deterministic fixes before validation: cite keys that are only mis-escaped or

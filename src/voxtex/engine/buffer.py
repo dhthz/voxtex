@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 
+SELECTION_ID = "sel"  # the editor's selected text, offered to the model as an editable block
+
 
 @dataclass
 class Block:
@@ -55,4 +57,16 @@ class Buffer:
         return b
 
     def recent(self, n: int = 3) -> list[Block]:
-        return self.blocks[-n:]
+        return [b for b in self.blocks if b.id != SELECTION_ID][-n:]
+
+    def set_selection(self, text: str) -> None:
+        """Offer the editor's selected text as block `sel` ("" removes it)."""
+        self.blocks = [b for b in self.blocks if b.id != SELECTION_ID]
+        if text.strip():
+            self.blocks.append(Block(SELECTION_ID, text))
+
+    def adopt(self, block: Block) -> None:
+        """Give a rewritten selection a normal id, so later corrections can refer to it."""
+        if block.id == SELECTION_ID:
+            block.id = f"b{self._next_id}"
+            self._next_id += 1

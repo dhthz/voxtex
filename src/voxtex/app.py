@@ -1,20 +1,21 @@
-"""Startup shared by `text`, `watch` and (later) `listen`: project, AI chain, target file."""
+"""Startup shared by `listen`, `text` and `watch`: project, AI chain, target file."""
 
 import json
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
-from rich.markup import escape
 from rich.prompt import Confirm, IntPrompt
 
 from voxtex.config import Config, load_config
-from voxtex.io.marker import MarkerLocation, find_marker
-from voxtex.io.writer import read_file
+from voxtex.engine.engine import Engine
+from voxtex.io.marker import MarkerLocation, fallback_location, find_marker
+from voxtex.io.writer import Writer, read_file
 from voxtex.project.discover import DiscoveryError
 from voxtex.project.index import STATE_DIR, ProjectIndex, load_index
-from voxtex.project.report import summary_lines
 from voxtex.providers import Chain, QuotaStore
+from voxtex.session import Session
 
 
 def open_project(console: Console, path: Path) -> tuple[ProjectIndex, Config] | None:
@@ -23,8 +24,6 @@ def open_project(console: Console, path: Path) -> tuple[ProjectIndex, Config] | 
     except DiscoveryError as e:
         console.print(f"[red]✗[/red] {e}")
         return None
-    for line in summary_lines(idx):
-        console.print(f"[green]✓[/green] {escape(line)}")
     return idx, load_config(idx.root_path)
 
 
@@ -51,8 +50,6 @@ def build_chain(
         console.print(f"[red]✗[/red] no usable AI provider (chain: {names}).")
         console.print("  Put GROQ_API_KEY=... in a .env file, or start Ollama.")
         return None
-    names = " → ".join(p.name for p in chain.usable())
-    console.print(f"[green]✓[/green] AI: {names}" + (" (private)" if private else ""))
     return chain
 
 
@@ -134,3 +131,52 @@ def offer_gitignore(console: Console, root: Path, interactive: bool) -> None:
         sep = "" if not existing or existing.endswith("\n") else "\n"
         gi.write_text(existing + f"{sep}{STATE_DIR}/\n", encoding="utf-8")
         console.print(f"[green]✓[/green] added {STATE_DIR}/ to .gitignore")
+
+
+@dataclass
+class Workspace:
+    """Everything a dictation session needs except the audio."""
+
+    idx: ProjectIndex
+    config: Config
+    chain: Chain
+    engine: Engine
+    location: MarkerLocation | None
+    session: Session | None  # None in a dry run
+
+    @property
+    def root(self) -> Path:
+        return self.idx.root_path
+
+
+def open_workspace(
+    console: Console,
+    path: Path,
+    private: bool,
+    provider: str | None,
+    file_opt: Path | None,
+    dry_run: bool,
+    interactive: bool,
+) -> Workspace | None:
+    """Project, AI chain, target file, engine and (unless dry run) the writing session."""
+    opened = open_project(console, path)
+    if opened is None:
+        return None
+    idx, config = opened
+    chain = build_chain(console, idx, config, private, provider)
+    if chain is None:
+        return None
+    root = idx.root_path
+    if dry_run:
+        target = (root / file_opt) if file_opt else None
+        location = location_in(root, target) if target else fallback_location(root, idx.body_files)
+        return Workspace(idx, config, chain, Engine(idx, chain, config, location), location, None)
+    target = choose_target(console, idx, file_opt, interactive)
+    if target is None:
+        return None
+    offer_gitignore(console, root, interactive)
+    writer = Writer(root)
+    writer.ensure_marker(target)
+    location = location_in(root, target)
+    engine = Engine(idx, chain, config, location)
+    return Workspace(idx, config, chain, engine, location, Session(engine, writer, target))
