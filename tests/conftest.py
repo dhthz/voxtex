@@ -31,7 +31,12 @@ def make_project(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path, monkeypatch):
-    """Run every test from an empty directory, so a developer's .env never leaks in."""
+    """Run every test from an empty directory, so a developer's .env never leaks in..."""
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
+    # ...and never the developer's own ~/.config/voxtex either.
+    from voxtex import config, initwizard
+
+    monkeypatch.setattr(config, "GLOBAL_CONFIG", tmp_path / "global-config")
+    monkeypatch.setattr(initwizard, "GLOBAL_CONFIG", tmp_path / "global-config")
