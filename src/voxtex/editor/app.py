@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Center, Horizontal
+from textual.containers import Center, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import TextAreaTheme
@@ -28,10 +28,12 @@ from voxtex import config as voxtex_config
 from voxtex.app import build_chain, open_project
 from voxtex.audio.turns import is_garbled, spoken_undo
 from voxtex.config import Config
-from voxtex.editor import palette, pill, usage
+from voxtex.editor import palette, pill, usage, words
 from voxtex.editor.highlight import char_to_byte, latex_spans
 from voxtex.editor.menus import FilePicker, ThemePicker, hints
 from voxtex.editor.place import Location, advance, place_block
+from voxtex.editor.tablepane import TablePane
+from voxtex.editor.tables import ends_with_break, find_table, parse, render
 from voxtex.engine.buffer import Buffer
 from voxtex.engine.decide import Ignore, Insert, Replace, UncertainInsert
 from voxtex.engine.engine import Engine, Step
@@ -47,7 +49,7 @@ FRESH_SECONDS = 4.0  # how long newly written text stays tinted
 CHECK_SECONDS = 20.0  # text voxtex is unsure about stays tinted longer
 BOM = "﻿"
 AUTOSAVE_S = 1.5  # typed edits are saved this long after the last keystroke
-USAGE_AUTO_WIDTH = 130  # the usage panel opens by itself on terminals this wide
+PANES_AUTO_WIDTH = 130  # the side panes open by themselves on terminals this wide
 
 
 def text_area_theme(pal: palette.Palette) -> TextAreaTheme:
@@ -128,9 +130,12 @@ class EditorApp(App):
     }
     #body { width: 100%; height: 1fr; }
     #page { width: 1fr; height: 1fr; margin-top: 1; }
-    #usage {
-        width: 36; height: 1fr; padding: 1 2; background: ansi_default;
-        border-left: solid $vx-surface0;
+    #side { width: 38; height: 1fr; }
+    #table { height: auto; max-height: 70%; }
+    .pane {
+        height: 1fr; padding: 0 1; background: ansi_default;
+        border: round $vx-surface1; border-title-color: $vx-text;
+        border-title-style: bold; border-subtitle-color: $vx-overlay0;
     }
     LatexArea {
         width: 100%; max-width: 104; height: 1fr; border: none; padding: 0;
@@ -159,7 +164,9 @@ class EditorApp(App):
         Binding("ctrl+o", "open_file", "Open a file"),
         Binding("ctrl+t", "toggle_unfiltered", "Unfiltered / AI formatting"),
         Binding("ctrl+p", "pick_theme", "Theme"),
-        Binding("ctrl+g", "toggle_usage", "Usage panel"),
+        Binding("ctrl+g", "toggle_usage", "Usage pane"),
+        Binding("ctrl+n", "toggle_words", "Words pane"),
+        Binding("ctrl+l", "edit_table", "Edit the table"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
@@ -207,8 +214,13 @@ class EditorApp(App):
         self.download: tuple[float, float] | None = None  # speech model: MB done, MB in all
         state = _load_state(self.root)
         self.unfiltered = bool(state.get("unfiltered", False))  # words as heard, no AI
-        self.show_usage: bool | None = state.get("usage")  # None: open it if there's room
+        # Side panes, toggled one by one like btop's; None: open if there's room.
+        self.show_usage: bool | None = state.get("usage")
+        self.show_words: bool | None = state.get("words")
         self.usage = usage.Usage()
+        self.counts_stale = self.table_stale = True
+        self.words_at_open = 0
+        self.table_span: tuple[int, int] | None = None  # the table around the cursor
 
     # --- layout ----------------------------------------------------------------------------
 
@@ -219,7 +231,10 @@ class EditorApp(App):
                 yield LatexArea(
                     id="editor", soft_wrap=True, show_line_numbers=True, tab_behavior="indent"
                 )
-            yield Static(id="usage")
+            with Vertical(id="side"):
+                yield TablePane(id="table", classes="pane")
+                yield Static(id="usage", classes="pane")
+                yield Static(id="words", classes="pane")
         yield Static(id="heard")
         with Center(id="dock"):
             yield Static(id="pill")
@@ -232,8 +247,17 @@ class EditorApp(App):
         self.area.register_theme(text_area_theme(self.pal))
         self.area.theme = "voxtex"
         self.load(self.path)
-        if self.show_usage is None:
-            self.show_usage = self.size.width >= USAGE_AUTO_WIDTH
+        wide = self.size.width >= PANES_AUTO_WIDTH
+        self.show_usage = wide if self.show_usage is None else self.show_usage
+        self.show_words = wide if self.show_words is None else self.show_words
+        table = self.query_one("#table", TablePane)
+        table.border_title, table.border_subtitle = "table", "ctrl+l"
+        for pane, (title, key) in {
+            "usage": ("usage", "ctrl+g"),
+            "words": ("words", "ctrl+n"),
+        }.items():
+            widget = self.query_one(f"#{pane}", Static)
+            widget.border_title, widget.border_subtitle = title, key
         if any(_on_this_machine(p) for p in self.chain.usable()):
             self.usage.gpu_used = True  # the local model (Ollama) may run on the GPU
             self.usage.start_gpu()  # shows nothing without an NVIDIA GPU
@@ -259,6 +283,7 @@ class EditorApp(App):
         self.saved_text = text
         self.saved_mtime = path.stat().st_mtime
         self.engine.buffer = Buffer()
+        self.words_at_open = words.count(text).words
         row = _remembered_row(self.root, self.rel)
         lines = self.area.document.lines
         if row is None or row >= len(lines):
@@ -286,6 +311,10 @@ class EditorApp(App):
         if self.autosave is not None:
             self.autosave.stop()
         self.autosave = self.set_timer(AUTOSAVE_S, self.save)
+        self.counts_stale = self.table_stale = True
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        self.counts_stale = self.table_stale = True
 
     def action_open_file(self) -> None:
         def chosen(rel: str | None) -> None:
@@ -324,6 +353,11 @@ class EditorApp(App):
     def action_toggle_usage(self) -> None:
         self.show_usage = not self.show_usage
         _remember(self.root, usage=self.show_usage)
+
+    def action_toggle_words(self) -> None:
+        self.show_words = not self.show_words
+        _remember(self.root, words=self.show_words)
+        self.counts_stale = True
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         # Esc only cancels a recording; otherwise it reaches menus and the editor.
@@ -602,15 +636,72 @@ class EditorApp(App):
         widget.styles.border = ("round", pill.border(state, self.pal))
         widget.update(pill.pill_content(state, self.levels, time.monotonic(), self.pal))
 
+    # --- tables ----------------------------------------------------------------------------
+
+    def find_table(self) -> None:
+        """Show the table pane while the cursor is in a table (or the pane is in use)."""
+        pane = self.query_one("#table", TablePane)
+        if pane.has_focus_within:
+            return  # editing there: the cursor in the text doesn't move meanwhile
+        doc, text = self.area.document, self.area.text
+        found = find_table(text, doc.get_index_from_location(self.area.cursor_location))
+        table = parse(text[found[0] : found[1]]) if found else None
+        self.table_span = found if table else None
+        pane.display = table is not None
+        if table is not None:
+            pane.show(table, text[found[0] : found[1]])
+
+    def action_edit_table(self) -> None:
+        pane = self.query_one("#table", TablePane)
+        if self.table_span is None:
+            self.note("Put the cursor in a table first.")
+            return
+        pane.grid.focus()
+
+    def on_table_pane_edited(self, event: TablePane.Edited) -> None:
+        """Write the edited table back into the chapter (one undoable change)."""
+        pane = self.query_one("#table", TablePane)
+        if self.table_span is None:
+            return
+        start, end = self.table_span
+        area, doc = self.area, self.area.document
+        if area.text[start:end] != pane.source:
+            self.note("The table changed in the text meanwhile; edit it again.", "warning")
+            pane.source = ""
+            return
+        new = render(event.table, ends_with_break(pane.source))
+        area.replace(new, doc.get_location_from_index(start), doc.get_location_from_index(end))
+        area.move_cursor(doc.get_location_from_index(start))
+        self.table_span = (start, start + len(new))
+        pane.show(event.table, new)
+
     def refresh_chrome(self) -> None:
         try:
-            top, heard, panel = (self.query_one(f"#{n}", Static) for n in ("top", "heard", "usage"))
+            top, heard, used, counted = (
+                self.query_one(f"#{n}", Static) for n in ("top", "heard", "usage", "words")
+            )
+            side = self.query_one("#side")
         except NoMatches:  # closing down
             return
         top.update(self.top_bar())
-        panel.display = bool(self.show_usage)
+        # The open panes share the side column; with none open it disappears. A table
+        # under the cursor opens its own pane and widens the column to fit it.
+        if self.table_stale:
+            self.table_stale = False
+            self.find_table()
+        in_table = self.table_span is not None
+        used.display, counted.display = bool(self.show_usage), bool(self.show_words)
+        side.display = bool(self.show_usage or self.show_words or in_table)
+        side.styles.width = max(38, min(80, int(self.size.width * 0.45))) if in_table else 38
         if self.show_usage:
-            panel.update(usage.render(self.usage, self.chain, panel.size.width or 32, self.pal))
+            width = used.content_region.width or 32
+            used.update(usage.render(self.usage, self.chain, width, self.pal))
+        if self.show_words and self.counts_stale:
+            self.counts_stale = False
+            selected = self.area.selected_text
+            sel = words.count(selected) if selected.strip() else None
+            counted.update(words.render(sel, words.count(self.area.text), self.words_at_open,
+                                        self.pal))  # fmt: skip
         heard.update(self.heard_line(self.size.width - 8))
 
     def top_bar(self) -> Table:
@@ -657,13 +748,19 @@ class EditorApp(App):
             )  # fmt: skip
         if self.phase == "loading":
             return Text("loading speech recognition…", style=pal.overlay0)
+        if self.phase == "ready" and self.query_one("#table", TablePane).has_focus_within:
+            return hints(("↑↓←→", "move"), ("↵", "edit cell"), ("r/c", "add row/column"),
+                         ("d/x", "delete row/column"), ("esc", "back"), pal=pal)  # fmt: skip
+        if self.phase == "ready" and self.table_span is not None:
+            return hints(("^l", "edit the table"), ("^space", "talk"), pal=pal)
         if self.phase == "ready" and self.area.selected_text.strip():
             what = "replace the selection" if self.unfiltered else "say what to change"
             return hints(("^space", what), pal=pal)
         if self.phase == "ready":
             mode = "ai format" if self.unfiltered else "unfiltered"
-            return hints(("^space", "talk"), ("^o", "files"), ("^t", mode), ("^g", "usage"),
-                         ("^p", "theme"), ("^q", "quit"), pal=pal)  # fmt: skip
+            keys = [("^space", "talk"), ("^o", "files"), ("^t", mode), ("^g", "usage"),
+                    ("^n", "words"), ("^p", "theme"), ("^q", "quit")]  # fmt: skip
+            return hints(*keys, pal=pal)
         return Text("")
 
 

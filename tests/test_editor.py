@@ -367,3 +367,85 @@ async def test_typing_saves_itself_after_a_pause(editor, monkeypatch):
         await pilot.pause(0.05)
         assert "typed by handx" in path.read_text()
         assert any(n.message.startswith("Saved") for n in app._notifications)
+
+
+@pytest.mark.parametrize(
+    "latex, words",
+    [
+        (r"Το \en{Sesame} αποθηκεύει δεδομένα \en{RDF} \cite{Broekstra02}.", 5),
+        (r"\section{Related Work}\label{sec:rw} See Figure~\ref{fig:a} and $x^2$ here.", 6),
+        (r"\textbf{bold words} and \emph{this} \\ next % not this", 5),
+        ("\\begin{equation}\n E = mc^2 \\label{eq:1}\n\\end{equation}\nDone.", 1),
+        (
+            r"\begin{figure}[!ht]\centering\includegraphics[width=5cm]{a.png}"
+            r"\caption{Αρχιτεκτονική Απλού Κόμβου}\label{f}\end{figure}",
+            3,
+        ),
+        (r"50\% of state-of-the-art models don't", 5),
+        (
+            "\\documentclass{book}\\usepackage{x}\\title{T}\n"
+            "\\begin{document}Only this.\\end{document}",
+            2,
+        ),
+    ],
+)
+def test_word_count_is_what_the_pdf_shows(latex, words):
+    from voxtex.editor.words import count
+
+    assert count(latex).words == words
+
+
+async def test_side_panes_open_on_their_own(editor):
+    app, path, llm = editor
+    async with app.run_test(size=(150, 40)) as pilot:
+        assert app.show_usage and app.show_words  # wide enough: both open
+        await pilot.press("ctrl+g")  # usage closes; words takes the column
+        await pilot.pause(0.2)
+        assert not app.query_one("#usage").display and app.query_one("#words").display
+        app.area.select_line(0)
+        await pilot.pause(0.2)
+        from rich.console import Console
+
+        console = Console(width=40, record=True)
+        console.print(app.query_one("#words").content)
+        assert "selection" in console.export_text()
+        await pilot.press("ctrl+n")
+        await pilot.pause(0.2)
+        assert not app.query_one("#side").display  # no pane open: no column
+    from voxtex.editor.app import _load_state
+
+    assert _load_state(app.root)["usage"] is False and _load_state(app.root)["words"] is False
+
+
+async def test_a_table_is_edited_in_its_pane(editor):
+    from test_tables import BOOKTABS
+
+    app, path, llm = editor
+    path.write_text(BOOKTABS, encoding="utf-8")  # the editor opens this file
+    async with app.run_test(size=(150, 40)) as pilot:
+        row = next(i for i, ln in enumerate(app.area.document.lines) if "legal-bert" in ln)
+        app.area.move_cursor((row, 6))
+        await pilot.pause(0.2)
+        assert app.query_one("#table").display  # the pane opens by itself
+        await pilot.press("ctrl+l", "down", "right", "enter")  # row 2, column 2
+        await pilot.pause(0.1)
+        app.query_one("#cell").value = "0.73"
+        await pilot.press("enter", "r")  # change the cell, then add a row after it
+        await pilot.pause(0.3)
+        await pilot.press("escape")  # back to the text
+        await pilot.pause(0.1)
+        assert app.area.has_focus
+        text = app.area.text
+        assert r"\textbf{legal-bert} & 0.73" in text and "0.71" not in text
+        assert len(table_rows(text)) == 4  # header, two models, the new row
+        assert r"\caption{Results \& more}" in text  # outside the tabular: untouched
+        app.area.move_cursor((0, 0))
+        await pilot.pause(0.2)
+        assert not app.query_one("#table").display  # out of the table: the pane goes
+
+
+def table_rows(text):
+    from voxtex.editor.tables import find_table, parse
+
+    start, end = find_table(text, text.index("legal-bert"))
+    return parse(text[start:end]).rows

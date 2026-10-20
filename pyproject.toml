@@ -1,6 +1,6 @@
 [project]
 name = "voxtex"
-version = "0.1.1"
+version = "0.2.0"
 description = "Talk to your thesis, get LaTeX that compiles: a voice editor for LaTeX in Greek and English."
 readme = "README.md"
 requires-python = ">=3.11"

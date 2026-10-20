@@ -76,9 +76,13 @@ another one fits better, nothing odd is written: a message shows what it heard s
 can say it again. `ctrl+t` switches to unfiltered: what you say goes in exactly as
 heard, with no AI (press it again for AI formatting). `ctrl+p` picks a theme (charcoal by default, voxtex,
 catppuccin, nord, gruvbox, dracula, tokyo-night, solarized, rose-pine, ...); the
-background always stays your terminal's. `ctrl+g` shows or hides small
-graphs of what's in use (AI calls and tokens, speech time, and the GPU when speech
-or the local model runs on it). `ctrl+z` undoes, `ctrl+o` opens any `.tex` file in the
+background always stays your terminal's. Side panes open and close one by one, like btop's, and share the space: `ctrl+g`
+shows what's in use (AI calls and tokens, speech time, and the GPU when
+speech or the local model runs on it), `ctrl+n` counts words as the PDF shows them (the
+selection, or the whole chapter; commands, citations and maths don't count). With the
+cursor in a table, a table pane opens and shows it as a grid: `ctrl+l` goes into it,
+↵ edits a cell, `r`/`c` add a row or column and `d`/`x` delete one, and every change is
+written back as tidy LaTeX (your column spec and `\hline`/`\toprule` rules kept). `ctrl+z` undoes, `ctrl+o` opens any `.tex` file in the
 thesis folder (type to filter, `esc` to go back), `ctrl+q` quits. voxtex saves after every voice edit, a moment after you stop typing, and on `ctrl+s` (with a backup in
 `.voxtex/backups/` before the first save), so your PDF viewer and other editors see
 the changes right away.
