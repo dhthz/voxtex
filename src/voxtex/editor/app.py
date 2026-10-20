@@ -46,6 +46,7 @@ SILENT_PEAK = 0.01  # a recording never louder than this heard nothing
 FRESH_SECONDS = 4.0  # how long newly written text stays tinted
 CHECK_SECONDS = 20.0  # text voxtex is unsure about stays tinted longer
 BOM = "﻿"
+AUTOSAVE_S = 1.5  # typed edits are saved this long after the last keystroke
 USAGE_AUTO_WIDTH = 130  # the usage panel opens by itself on terminals this wide
 
 
@@ -202,6 +203,7 @@ class EditorApp(App):
         self.microphone = self.transcriber = self.fallback = None
         self.prompt = ""
         self.said = ""
+        self.autosave = None  # the pending save after typing
         self.download: tuple[float, float] | None = None  # speech model: MB done, MB in all
         state = _load_state(self.root)
         self.unfiltered = bool(state.get("unfiltered", False))  # words as heard, no AI
@@ -276,6 +278,14 @@ class EditorApp(App):
 
     def action_save(self) -> None:
         self.save()
+        self.note(f"Saved {self.rel}")
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Typed edits save themselves after a short pause, like voice edits do. Some
+        terminals (VS Code's, for one) keep ctrl+s for themselves."""
+        if self.autosave is not None:
+            self.autosave.stop()
+        self.autosave = self.set_timer(AUTOSAVE_S, self.save)
 
     def action_open_file(self) -> None:
         def chosen(rel: str | None) -> None:

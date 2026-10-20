@@ -79,7 +79,7 @@ catppuccin, nord, gruvbox, dracula, tokyo-night, solarized, rose-pine, ...); the
 background always stays your terminal's. `ctrl+g` shows or hides small
 graphs of what's in use (AI calls and tokens, speech time, and the GPU when speech
 or the local model runs on it). `ctrl+z` undoes, `ctrl+o` opens any `.tex` file in the
-thesis folder (type to filter, `esc` to go back), `ctrl+q` quits. voxtex saves after every voice edit (with a backup in
+thesis folder (type to filter, `esc` to go back), `ctrl+q` quits. voxtex saves after every voice edit, a moment after you stop typing, and on `ctrl+s` (with a backup in
 `.voxtex/backups/` before the first save), so your PDF viewer and other editors see
 the changes right away.
 

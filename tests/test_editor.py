@@ -351,3 +351,19 @@ def test_every_theme_has_a_full_palette():
         for value in pal.css().values():
             Color.parse(value)  # raises on a bad colour
         assert theme.variables["vx-accent"] == pal.accent, name
+
+
+async def test_typing_saves_itself_after_a_pause(editor, monkeypatch):
+    from voxtex.editor import app as editor_app
+
+    monkeypatch.setattr(editor_app, "AUTOSAVE_S", 0.5)
+    app, path, llm = editor
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.press(*"typed by hand")
+        assert "typed by hand" not in path.read_text()  # not on every keystroke
+        await pilot.pause(0.9)
+        assert "typed by hand" in path.read_text()
+        await pilot.press("x", "ctrl+s")
+        await pilot.pause(0.05)
+        assert "typed by handx" in path.read_text()
+        assert any(n.message.startswith("Saved") for n in app._notifications)
